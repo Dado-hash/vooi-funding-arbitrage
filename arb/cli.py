@@ -6,7 +6,7 @@ import sys
 from collections import Counter
 
 from .client import MCPError, VooiClient
-from .config import DATA_DIR, load_config
+from .config import DATA_DIR, load_config, trading_mode
 from .scan import (ScanParams, fetch_strategies, pair_id, render_table, run_scan,
                    top_per_venue_pair)
 from . import store
@@ -102,17 +102,70 @@ def cmd_propose(args, cfg, client) -> None:
 
     conn = store.connect()
     ttl = args.ttl or cfg.get("execution", {}).get("proposal_ttl_min", 15)
+    mode = trading_mode()
+    capital = None
     if args.kind == "open":
-        notional = args.notional or cfg["scan"]["notional_usd"]
+        from .capital import check_capital
+
+        notional = args.notional or cfg.get("strategy", {}).get("notional_per_strategy") or cfg["scan"]["notional_usd"]
+        exchanges = [args.long.rsplit(":", 1)[1], args.short.rsplit(":", 1)[1]]
+        capital = check_capital(client, cfg, exchanges, notional, args.leverage)
+        if capital["missing"] > 0 or (not capital["ok"] and mode == "execute"):
+            # Niente proposta: prima vanno sistemati i fondi. In execute l'approvazione arriva solo a capitale pronto.
+            text = "\n".join([f"OPPORTUNITÀ {args.long} > {args.short} (${notional:,.0f}/gamba, leva {args.leverage:g}x)",
+                              "Non propongo il trade finché il capitale non è pronto.", ""] + capital["lines"]
+                             + ([f"", f"Perché il trade: {args.reason}"] if args.reason else []))
+            print(text)
+            if not args.no_send:
+                from .telegram import send
+                send(text)
+            print("\n[capitale] proposta NON creata: fondi da sistemare. Ricontrolla al prossimo ciclo.")
+            return
         p = approvals.propose_open(client, conn, args.long, args.short, notional, args.leverage, args.reason, ttl)
     else:
         p = approvals.propose_close(client, conn, args.long, args.short, args.reason, ttl)
+    if mode == "notify":
+        text = approvals.manual_instructions(p)
+        if capital:
+            if capital["moves"]:
+                text = "PRIMA DI APRIRE:\n" + "\n".join(capital["lines"]) + "\n\n" + text
+            else:
+                text += "\n\n" + "\n".join(capital["lines"])
+        approvals.set_status(conn, p["id"], "notified")
+        print(text)
+        if not args.no_send:
+            from .telegram import send
+            send(text)
+        print(f"\n[notify] istruzioni #{p['id']} {'inviate' if not args.no_send else 'create'}: l'utente opera su VOOI. "
+              f"Al prossimo ciclo verifica con `arb monitor` e, se aperta, `arb journal open`.")
+        return
+    if capital:
+        p["summary"] += "\n\n" + "\n".join(capital["lines"])
     print(p["summary"])
     if not args.no_send:
         approvals.set_status(conn, p["id"], "pending", tg_message_id=send_proposal(p))
-        print(f"\nproposta #{p['id']} inviata su Telegram, scade {p['expires_ts']}")
+        print(f"\n[execute] proposta #{p['id']} inviata, scade {p['expires_ts']}. "
+              f"Ora: `uv run arb tg wait {p['id']}` in background, poi `uv run arb execute {p['id']}` se approvata.")
     else:
         print(f"\nproposta #{p['id']} creata (non inviata)")
+
+
+def cmd_capital(args, cfg, client) -> None:
+    """Saldi per venue e spostamenti necessari per aprire una strategia (o solo i saldi)."""
+    from .capital import check_capital, fetch_balances
+
+    if args.notional:
+        venues = _csv(args.venues) or cfg["scan"]["venues"]
+        r = check_capital(client, cfg, venues, args.notional, args.leverage)
+        _dump({k: v for k, v in r.items() if k != "lines"}) if args.json else print("\n".join(r["lines"]))
+    else:
+        balances = fetch_balances(client)
+        if args.json:
+            _dump(balances)
+        elif not balances:
+            print("nessun saldo: exchange non collegati?")
+        for ex, b in balances.items():
+            print(f"{ex}: equity ${b['equity']:,.2f} · disponibile ${b['available']:,.2f} · in uso ${b['used']:,.2f}")
 
 
 def cmd_proposals(args, cfg, client) -> None:
@@ -193,6 +246,22 @@ def cmd_journal(args, cfg, client) -> None:
         _dump(store.journal_list(conn, open_only=args.open))
 
 
+def cmd_daily(args, cfg, client) -> None:
+    """Riepilogo giornaliero: `due` se oggi (ora locale) non è ancora stato inviato e sono passate le 9."""
+    from datetime import datetime
+
+    conn = store.connect()
+    today = datetime.now().date().isoformat()
+    row = conn.execute("SELECT value FROM kv WHERE key = 'daily_sent'").fetchone()
+    if args.mark:
+        conn.execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('daily_sent', ?)", (today,))
+        conn.commit()
+        print("marcato")
+    else:
+        due = (row is None or row["value"] != today) and datetime.now().hour >= 9
+        print("due" if due else "done")
+
+
 def cmd_call(args, cfg, client) -> None:
     _dump(client.call(args.tool, json.loads(args.args) if args.args else {}))
 
@@ -249,8 +318,17 @@ def main() -> None:
     pp.add_argument("--ttl", type=float, help="minuti di validità")
     pp.add_argument("--no-send", action="store_true")
 
+    sub.add_parser("mode", help="mostra TRADING_MODE (notify | execute)")
+    cp = sub.add_parser("capital", help="saldi per venue e spostamenti necessari")
+    cp.add_argument("--notional", type=float, help="USD per gamba della strategia da aprire")
+    cp.add_argument("--leverage", type=float, default=2)
+    cp.add_argument("--venues", help="default: venue in config.toml")
+    cp.add_argument("--json", action="store_true")
+    da = sub.add_parser("daily", help="riepilogo giornaliero: dovuto? (--mark dopo l'invio)")
+    da.add_argument("--mark", action="store_true")
+
     pls = sub.add_parser("proposals", help="elenco proposte")
-    pls.add_argument("--status", choices=["pending", "approved", "rejected", "expired", "stale", "executed", "failed"])
+    pls.add_argument("--status", choices=["pending", "notified", "approved", "rejected", "expired", "stale", "executed", "failed"])
 
     ex = sub.add_parser("execute", help="esegue una proposta APPROVATA")
     ex.add_argument("id")
@@ -290,13 +368,22 @@ def main() -> None:
     args = ap.parse_args()
     cfg = load_config()
     try:
-        client = None if args.cmd in ("journal", "tg", "proposals") else VooiClient()
+        if args.cmd == "mode":
+            print(trading_mode())
+            return
+        client = None if args.cmd in ("journal", "tg", "proposals", "daily") else VooiClient()
         {"scan": cmd_scan, "venues": cmd_venues, "portfolio": cmd_portfolio, "plan": cmd_plan, "tg": cmd_tg,
-         "propose": cmd_propose, "proposals": cmd_proposals, "execute": cmd_execute,
+         "propose": cmd_propose, "daily": cmd_daily, "capital": cmd_capital, "proposals": cmd_proposals, "execute": cmd_execute,
          "pair": cmd_pair, "monitor": cmd_monitor,
          "journal": cmd_journal, "call": cmd_call}[args.cmd](args, cfg, client)
     except MCPError as e:
         sys.exit(f"errore MCP: {e}")
+    except Exception as e:
+        from .telegram import TelegramError
+
+        if isinstance(e, TelegramError):
+            sys.exit(f"errore Telegram: {e}")
+        raise
 
 
 if __name__ == "__main__":

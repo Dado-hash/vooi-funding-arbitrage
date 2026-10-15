@@ -14,6 +14,7 @@ import time
 
 from . import approvals
 from .client import MCPError, VooiClient
+from .config import trading_mode
 from .monitor import _asset_key, fetch_positions
 from .plan import _market
 from .store import journal_open, now_iso
@@ -73,6 +74,14 @@ def check(client: VooiClient, cfg: dict, p: dict) -> list[str]:
             problems.append(f"notional ${notional:,.0f} oltre il limite ${lim['max_notional_per_leg']:,.0f}")
         o["_market"] = m
     if p["kind"] == "open":
+        from .capital import fetch_balances, plan_capital
+
+        needs: dict[str, float] = {}
+        for o in pay["orders"]:
+            needs[o["exchange"]] = needs.get(o["exchange"], 0) + float(o["size"]) * float(o["_market"]["price"]) / pay["leverage"]
+        cap = plan_capital(fetch_balances(client), needs, buffer=0.02)
+        if not cap["ok"]:
+            problems += [l for l in cap["lines"][1:]]
         if pay["leverage"] > lim["max_leverage"]:
             problems.append(f"leva {pay['leverage']}x oltre il limite {lim['max_leverage']}x")
         by_side = {o["side"]: o["_market"] for o in pay["orders"]}
@@ -104,6 +113,8 @@ def _order(client: VooiClient, o: dict, log: list) -> dict:
 
 
 def execute(client: VooiClient, cfg: dict, conn, pid: str) -> dict:
+    if trading_mode() != "execute":
+        return {"id": pid, "status": "refused", "problems": ["TRADING_MODE non è execute: Claude non esegue ordini"]}
     p = approvals.get(conn, pid)
     if not p:
         raise ExecutionError(f"proposta {pid} inesistente")
@@ -157,7 +168,8 @@ def execute(client: VooiClient, cfg: dict, conn, pid: str) -> dict:
 
 
 def render_result(r: dict) -> str:
-    head = {"executed": "ESEGUITA", "failed": "FALLITA", "stale": "NON ESEGUITA (condizioni cambiate)"}.get(
+    head = {"executed": "ESEGUITA", "failed": "FALLITA", "stale": "NON ESEGUITA (condizioni cambiate)",
+            "refused": "NON ESEGUITA (modalità notify)"}.get(
         r["status"], r["status"])
     lines = [f"PROPOSTA #{r['id']}: {head}"]
     lines += [f"- {x}" for x in r.get("problems", []) + r.get("log", [])]

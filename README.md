@@ -4,7 +4,12 @@ Toolkit per scegliere e monitorare strategie di funding arbitrage delta-neutral 
 
 L'obiettivo non è l'APR più alto del momento. È il miglior **rendimento netto atteso sull'orizzonte di holding**, tenendo conto di quanto dura lo spread e dei costi di entrata e uscita. Uno spread da 1000% APR che si chiude in 20 minuti non copre le fee.
 
-Il toolkit lo usa soprattutto Claude come analista: Claude esegue gli scan, interpreta i risultati e controlla periodicamente le posizioni. Ogni operazione arriva su Telegram come **proposta con i pulsanti Approva/Rifiuta**. Solo dopo l'approvazione Claude la esegue via MCP con `arb execute`. Senza approvazione non parte nessun ordine.
+Il toolkit lo usa soprattutto Claude come analista: Claude esegue gli scan, interpreta i risultati e controlla periodicamente le posizioni. Cosa succede dopo dipende da `TRADING_MODE` in `.env`:
+
+- `notify` (default): Claude manda su Telegram analisi e istruzioni passo-passo, l'utente opera a mano su VOOI. Claude non esegue mai ordini (`arb execute` si rifiuta).
+- `execute`: ogni operazione arriva come **proposta con i pulsanti Approva/Rifiuta**. Solo dopo il tap Claude la esegue via MCP con `arb execute`.
+
+Per cambiare modalità modifica `.env`. `uv run arb mode` mostra quella attiva.
 
 ## Setup
 
@@ -33,6 +38,9 @@ I parametri di default (venue, notional, orizzonte, soglie, fee) stanno in `conf
 | `uv run arb tg poll` | Legge i tap arrivati e aggiorna le proposte |
 | `uv run arb execute <id> [--dry-run]` | Esegue una proposta APPROVATA (con `--dry-run` fa solo i controlli) e manda l'esito su Telegram |
 | `uv run arb proposals [--status pending]` | Elenco proposte |
+| `uv run arb mode` | Mostra `TRADING_MODE` |
+| `uv run arb capital [--notional 500 --leverage 2]` | Saldi per venue. Con `--notional`: margine richiesto e spostamenti necessari per aprire una strategia |
+| `uv run arb daily [--mark]` | Dice se il riepilogo giornaliero è dovuto (`due`/`done`). `--mark` dopo l'invio |
 | `uv run arb tg send "testo"` / `echo testo \| uv run arb tg send` | Invia un messaggio su Telegram |
 | `uv run arb tg chat-id` | Mostra le chat che hanno scritto al bot (per ricavare `TELEGRAM_CHAT_ID`) |
 | `uv run arb pair CHIP:aster CHIP:hyperliquid` | Analisi completa di una singola coppia (`SYM:exchange` long, poi short) |
@@ -74,6 +82,7 @@ Spread = `short_rate − long_rate`, orario. I rendimenti sono una frazione del 
 | `score` | `net` annualizzato sull'orizzonte. **È la metrica di ranking** |
 | `BE` | Ore di holding necessarie per coprire i costi |
 | `APR30`/`pos_all` (JSON: `mean_all`, `pos_all`) | Media e quota di ore positive su tutto lo storico (`history_days`, default 30): distingue uno spread strutturale da un regime recente |
+| `apr_on_capital` | Netto annualizzato sul capitale impegnato, leva inclusa: `net × leva/2 × 8760/orizzonte`. Il margine totale è 2 gambe × notional / leva, quindi a 2x coincide con il netto per gamba. **Obiettivo minimo: 20%** (`min_apr_on_capital` in `[strategy]`) |
 | `roi_on_margin` | `net` × leva comune ÷ 2: rendimento sul margine totale delle due gambe |
 | `basis_entry` | `(prezzo_short − prezzo_long)/mid` all'ingresso. Positivo = favorevole |
 | `basis_mean` | Media storica del basis dagli snapshot di prezzo (`price_snapshots`, uno per scan). Si usa da 24 snapshot in su |
@@ -88,7 +97,7 @@ Ogni scan salva i prezzi di tutti i mercati delle venue configurate, così la st
 
 ### Flag
 
-`storico corto`, `spread attuale negativo`, `regime recente` (positivo meno del 50% delle ore su tutto lo storico), `spread medio 24h negativo`, `instabile` (pos72 < 60%), `picco` (attuale > 3× media 7d), `costi non coperti entro l'orizzonte`, `OI basso`, `slippage alto` (> 15 bps), `book insufficiente`, `settlement imminente` (venue con intervallo di 4h o 8h, prossimo pagamento entro 60 minuti), `orari limitati` (mercato non 24x7: rischio gap), `stessa venue, sottostanti diversi` (es. USBOND contro TLT: non è delta-neutral puro), `basis sfavorevole`.
+`storico corto`, `spread attuale negativo`, `regime recente` (positivo meno del 50% delle ore su tutto lo storico), `spread medio 24h negativo`, `instabile` (pos72 < 60%), `picco` (attuale > 3× media 7d), `costi non coperti entro l'orizzonte`, `OI basso`, `slippage alto` (> 15 bps), `book insufficiente`, `settlement imminente` (venue con intervallo di 4h o 8h, prossimo pagamento entro 60 minuti), `orari limitati` (mercato non 24x7: rischio gap), `stessa venue, sottostanti diversi` (es. USBOND contro TLT: non è delta-neutral puro), `basis sfavorevole`, `sotto obiettivo` (`apr_on_capital` sotto il 20%: non blocca lo scan, ma `arb portfolio` e il ciclo non aprono queste coppie).
 
 Flag bloccanti (`is_viable` li esclude): `costi non coperti`, `book insufficiente`, `spread medio 24h negativo`, `instabile`, `analisi costi fallita`.
 
@@ -178,15 +187,46 @@ Setup:
 
 **Da fare al primo utilizzo reale**: il formato di `get_positions` non è ancora stato verificato con posizioni vere. Il primo trade va fatto con una size minima (per esempio $20 per gamba), per validare la verifica delle posizioni prima di usare il notional pieno.
 
+### Controllo del capitale
+
+Prima di ogni proposta di apertura, `arb propose` legge i saldi con `get_accounts`. Per ogni venue confronta il disponibile con il margine richiesto: `notional / leva × (1 + capital_buffer)`, con buffer del 10% per fee e oscillazioni.
+- **Fondi sbilanciati tra le venue**: suggerisce lo spostamento ("sposta $X USDC da Lighter a Hyperliquid", su VOOI → Transfer), arrotondato a $5.
+  - `notify`: lo spostamento è il primo passo del messaggio.
+  - `execute`: la proposta con i pulsanti non viene creata finché i fondi non sono a posto, così non approvi un trade che non si può eseguire.
+- **Capitale totale insufficiente**: nessuna proposta, solo l'avviso con quanto manca.
+- **Esecuzione**: `arb execute` ricontrolla il margine prima degli ordini, con un buffer del 2%.
+- **Trasferimenti**: Claude li suggerisce soltanto, mai li esegue.
+- **Da validare**: il formato di `get_accounts` non è ancora stato verificato con exchange collegati (`normalize_account` prova più nomi di campo). Va controllato al primo `arb capital` con fondi reali. I mercati HIP-3 di Hyperliquid (`xyz:`, …) hanno un margine separato dal conto principale: il ciclo non li apre.
+
+### Modalità notify
+
+Con `TRADING_MODE=notify`, `arb propose` non manda pulsanti ma istruzioni da seguire su VOOI:
+- coppia e direzione, con il link alla pagina dell'Arbitrage Desk;
+- leva, tipo Taker–Taker, size per gamba;
+- condizioni per non aprire, se lo spread o il prezzo sono cambiati.
+
+Al ciclo successivo Claude ritrova la posizione aperta con `arb monitor` e la registra nel journal.
+
 ### Loop
+
+La procedura completa del ciclo sta nel comando di progetto `.claude/skills/ciclo/SKILL.md` (`/ciclo`). In una nuova sessione Claude Code aperta nella cartella del progetto basta:
+
+```
+/loop 1h /ciclo
+```
+
+Le regole di apertura (numero di strategie, notional, soglie) stanno in `[strategy]` in `config.toml`.
+
+Per usare il progetto su un'altra macchina servono:
+- la cartella del progetto;
+- `.env` (token VOOI, Telegram, `TRADING_MODE`);
+- `uv` e `uv sync`.
+
+`data/arb.db` si ricostruisce da solo, ma si perdono journal e proposte: copialo se vuoi mantenerli.
 
 `.claude/settings.local.json` consente `uv run arb *` senza conferma in Claude Code, così il loop non si blocca. Gli ordini restano legati al tap su Telegram e ai limiti di `arb execute`.
 
-In una sessione Claude Code aperta nella cartella del progetto (funziona finché la sessione resta aperta e il Mac acceso):
-
-```
-/loop 1h esegui il ciclo di monitoraggio del playbook nel README
-```
+Il loop funziona finché la sessione resta aperta e il computer acceso.
 
 Messaggi, per evitare spam:
 - **Subito**: proposta con pulsanti per ogni `[AZIONE]` del monitor (uscita, ribilanciamento, gamba senza l'altra) e per ogni nuova opportunità o rotazione sopra le soglie del playbook.
@@ -200,7 +240,7 @@ Messaggi, per evitare spam:
 2. Fra le rimanenti preferisci, in quest'ordine: `score` alto, `pos72` ≥ 80%, `BE` ben sotto l'orizzonte, half-life lunga, OI e volume adeguati al notional.
 3. Diffida dell'`APRnow` molto sopra l'`APR7d`. Di solito è un picco: il modello lo sconta già, ma va detto all'utente.
 4. Per le 2-3 migliori esegui `arb pair` e, se serve, guarda `get_funding_rate_history` delle singole gambe: chi guida lo spread? È un funding negativo strutturale o un evento?
-5. Dimensiona con `arb portfolio` (capitale attuale: $1000, cioè $500 di margine per venue con leva 2x, fino a $1000 di notional per venue). I mercati HIP-3 (`xyz:`, `mkts:`, `io:`) su Hyperliquid accettano solo isolated margin.
+5. Dimensiona con `arb portfolio` (capitale attuale: circa $116, cioè $58 per venue, leva 2x, una strategia da $100 per gamba; i limiti stanno in `[strategy]`). I mercati HIP-3 (`xyz:`, `mkts:`, `io:`) su Hyperliquid accettano solo isolated margin.
 6. Proponi all'utente coppia, direzione, notional, leva, rendimento atteso e pessimista, break-even e rischi. Allega il piano di `arb plan`.
 7. Ogni operazione passa da `arb propose`, poi `arb tg wait <id>` in background, poi `arb execute <id>` solo se approvata. **Mai** chiamare direttamente i tool di scrittura dell'MCP (`create_order`, `set_leverage`, trasferimenti, ...). Mai trasferimenti né prelievi.
 8. Ciclo di monitoraggio (loop orario):
@@ -225,6 +265,10 @@ Messaggi, per evitare spam:
 
 ## Changelog
 
+- **2026-10-15**: primo uso reale. Hyperliquid e Lighter collegati con circa $58 ciascuno (Hyperliquid in `unifiedAccount`: lo spot USDC vale come margine). `[strategy]` adattato al capitale: 1 strategia, $100 per gamba. Parser dei saldi allineato al formato reale di `get_accounts`. Telegram verificato.
+- **2026-10-15**: controllo del capitale prima delle proposte di apertura (`arb/capital.py`, `get_accounts`): margine per venue con buffer del 10%, spostamenti suggeriti tra venue, nessuna proposta se mancano fondi. `arb execute` ricontrolla il margine. Nuovo comando `arb capital`, parametro `capital_buffer`.
+- **2026-10-15**: obiettivo minimo del 20% annuo netto sul capitale, leva inclusa (`min_apr_on_capital`, `leverage` in `[strategy]`). Nuovo campo `apr_on_capital` e flag `sotto obiettivo`. `arb portfolio` e `/ciclo` scartano le coppie sotto soglia. Sostituisce `min_net_horizon`.
+- **2026-10-15**: `TRADING_MODE` in `.env` (`notify` di default: istruzioni manuali con link all'Arbitrage Desk; `execute`: approvazione ed esecuzione). Comando di progetto `/ciclo` con la procedura del loop, regole `[strategy]` in config, `arb mode`, `arb daily`.
 - **2026-10-15**: permesso di progetto per `uv run arb *` (loop senza conferme in Claude Code).
 - **2026-10-15**: approvazione via Telegram ed esecuzione via MCP. Nuovi comandi: `arb propose` (proposta con pulsanti), `arb tg wait`/`poll`, `arb execute` (limiti `[execution]`, controllo dello scostamento, esecuzione a gambe con chiusura di sicurezza), `arb proposals`. Notional di default $1000 per gamba ($500 di margine × 2x).
 - **2026-10-15**: niente esecuzione automatica: Claude analizza e manda su Telegram cosa fare, l'utente esegue su VOOI. Nuovi comandi `arb plan` (piano d'ordine con size arrotondate e ordine delle gambe) e `arb tg` (invio Telegram).

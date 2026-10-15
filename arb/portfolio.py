@@ -12,7 +12,7 @@ from .metrics import HOURS_PER_YEAR
 from .scan import ScanParams, deepen_many, fetch_markets_index, is_viable, run_scan
 
 # Non bloccanti nello scan, ma esclusi dal portafoglio
-PORTFOLIO_EXCLUDE = ("spread attuale negativo", "stessa venue", "orari limitati")
+PORTFOLIO_EXCLUDE = ("spread attuale negativo", "stessa venue", "orari limitati", "sotto obiettivo")
 
 
 def maintenance_rate(max_leverage: float) -> float:
@@ -46,13 +46,15 @@ def simulate(client, cfg: dict, conn, p_base: ScanParams, capital: float, levera
     leg_capacity = margin * leverage * utilization
     p = replace(p_base, notional_usd=leg_capacity)
 
+    min_apr = cfg.get("strategy", {}).get("min_apr_on_capital")
     # Costi stimati al notional massimo: è il caso K = 1.
     result, _ = run_scan(client, cfg, p, conn)
     pool = sorted(
         (c for c in result["top"]
          if is_viable(c)
          and not any(x in f for f in c["flags"] for x in PORTFOLIO_EXCLUDE)
-         and min(c["long"]["max_leverage"], c["short"]["max_leverage"]) >= leverage),
+         and min(c["long"]["max_leverage"], c["short"]["max_leverage"]) >= leverage
+         and (min_apr is None or c["eval"]["net_blend"] * leverage / 2 * HOURS_PER_YEAR / p.horizon_h >= min_apr)),
         key=lambda c: c["eval"]["net_blend"], reverse=True,
     )
     markets = fetch_markets_index(client, venues)

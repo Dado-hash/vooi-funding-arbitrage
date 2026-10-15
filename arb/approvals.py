@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     kind TEXT NOT NULL,              -- open | close
     payload TEXT NOT NULL,           -- ordini esatti + contesto (JSON)
     summary TEXT NOT NULL,
-    status TEXT NOT NULL,            -- pending | approved | rejected | expired | stale | executed | failed
+    status TEXT NOT NULL,            -- pending | notified | approved | rejected | expired | stale | executed | failed
     decided_ts TEXT, executed_ts TEXT, result TEXT, tg_message_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
@@ -142,3 +142,41 @@ def propose_close(client: VooiClient, conn, long_spec: str, short_spec: str, rea
         + (f"\n\nPerché: {reason}" if reason else "")
     )
     return _insert(conn, "close", payload, summary, ttl_min)
+
+
+def _desk_url(order_long: dict, order_short: dict) -> str | None:
+    """Link alla pagina della coppia nell'Arbitrage Desk VOOI (schema osservato:
+    /arbitrage-desk/<asset>-<long_ex>-<quote>-<short_ex>-<quote>). Non per i mercati HIP-3."""
+    if ":" in order_long["asset"] or ":" in order_short["asset"] or not (order_long.get("quote") and order_short.get("quote")):
+        return None
+    return (f"https://ultra.vooi.io/arbitrage-desk/{order_long['asset'].lower()}-{order_long['exchange']}-"
+            f"{order_long['quote'].lower()}-{order_short['exchange']}-{order_short['quote'].lower()}")
+
+
+def manual_instructions(p: dict) -> str:
+    """Testo per la modalità notify: cosa fare a mano su VOOI."""
+    pay = p["payload"]
+    if p["kind"] == "open":
+        lo = next(o for o in pay["orders"] if o["side"] == "buy")
+        so = next(o for o in pay["orders"] if o["side"] == "sell")
+        url = _desk_url(lo, so)
+        lines = [
+            f"DA FARE SU VOOI · apri {pay['pair']} (rif. #{p['id']}, valido ~{p['expires_ts'][11:16]} UTC)",
+            "",
+            f"1. Arbitrage Desk → {lo['asset']}: Long {lo['exchange']} / Short {so['exchange']}" + (f"\n   {url}" if url else ""),
+            f"2. Leva {pay['leverage']:g}x su entrambe le gambe, tipo Taker–Taker.",
+            f"3. Size: {lo['size']} {lo['asset']} per gamba (~${pay['notional_per_leg']:,.0f}).",
+            "4. Verifica che le due posizioni abbiano la stessa size.",
+            "",
+            f"Spread funding ora: {pay['ref_spread_h'] * 8760:+.0%} APR · basis {pay['ref_basis'] * 1e4:+.1f} bps",
+            "Se lo spread è diventato negativo o il prezzo si è mosso >1%, non aprire: aspetta il prossimo ciclo.",
+        ]
+    else:
+        lines = [
+            f"DA FARE SU VOOI · chiudi {pay['pair']} (rif. #{p['id']})",
+            "",
+            "Arbitrage Positions → chiudi entrambe le gambe (market):",
+        ] + [f"- {o['exchange']}: {o['side'].upper()} {o['size']} {o['asset']} (reduce-only)" for o in pay["orders"]]
+    if pay.get("reason"):
+        lines += ["", f"Perché: {pay['reason']}"]
+    return "\n".join(lines)
