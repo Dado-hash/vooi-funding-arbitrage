@@ -14,6 +14,7 @@ import time
 
 from . import approvals
 from .client import MCPError, VooiClient
+from .config import trading_mode
 from .monitor import _asset_key, fetch_positions
 from .plan import _market
 from .store import journal_open, now_iso
@@ -104,6 +105,8 @@ def _order(client: VooiClient, o: dict, log: list) -> dict:
 
 
 def execute(client: VooiClient, cfg: dict, conn, pid: str) -> dict:
+    if trading_mode() != "execute":
+        return {"id": pid, "status": "refused", "problems": ["TRADING_MODE non è execute: Claude non esegue ordini"]}
     p = approvals.get(conn, pid)
     if not p:
         raise ExecutionError(f"proposta {pid} inesistente")
@@ -157,7 +160,8 @@ def execute(client: VooiClient, cfg: dict, conn, pid: str) -> dict:
 
 
 def render_result(r: dict) -> str:
-    head = {"executed": "ESEGUITA", "failed": "FALLITA", "stale": "NON ESEGUITA (condizioni cambiate)"}.get(
+    head = {"executed": "ESEGUITA", "failed": "FALLITA", "stale": "NON ESEGUITA (condizioni cambiate)",
+            "refused": "NON ESEGUITA (modalità notify)"}.get(
         r["status"], r["status"])
     lines = [f"PROPOSTA #{r['id']}: {head}"]
     lines += [f"- {x}" for x in r.get("problems", []) + r.get("log", [])]

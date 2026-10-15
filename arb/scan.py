@@ -229,7 +229,11 @@ def _deepen(client: VooiClient, c: dict, cfg: dict, p: ScanParams, markets: dict
     c["notional_usd"] = p.notional_usd
     c["eval"] = evaluate(stats, p.horizon_h, cost_rt, basis, b_mean).as_dict()
     c["roi_on_margin"] = _roi_on_margin(c)
+    c["apr_on_capital"] = apr_on_capital(c["eval"]["net_blend"], p.horizon_h, strategy_leverage(cfg))
     c["flags"] = _flags(c, p)
+    target = cfg.get("strategy", {}).get("min_apr_on_capital")
+    if target is not None and c["apr_on_capital"] < target:
+        c["flags"].append(f"sotto obiettivo: {c['apr_on_capital']:.0%} sul capitale (min {target:.0%})")
     c["deep"] = True
     return c
 
@@ -246,6 +250,16 @@ def deepen_many(client: VooiClient, cfg: dict, p: ScanParams, conn, cands: list[
     for c, out in zip(cands, outcomes):
         if isinstance(out, Exception):
             c["flags"] = [f"analisi costi fallita: {out}"]
+
+
+def strategy_leverage(cfg: dict) -> float:
+    return float(cfg.get("strategy", {}).get("leverage", 2))
+
+
+def apr_on_capital(net_return: float, horizon_h: float, leverage: float) -> float:
+    """Netto annualizzato sul capitale impegnato. Margine totale = 2 gambe × notional / leva,
+    quindi rendimento sul capitale = netto per gamba × leva / 2. A 2x coincide con il netto per gamba."""
+    return net_return * leverage / 2 * HOURS_PER_YEAR / horizon_h
 
 
 def _roi_on_margin(c: dict) -> dict:

@@ -146,3 +146,11 @@ def test_telegram_chunks():
     text = "\n".join(f"riga {i}" for i in range(2000))
     parts = chunks(text, size=500)
     assert "".join(parts) == text and all(len(p) <= 500 for p in parts)
+
+
+def test_apr_on_capital_includes_leverage():
+    from arb.scan import apr_on_capital
+
+    # 0.5% netto in 7 giorni per gamba: a 2x il capitale è 1× il notional per gamba → ~26% annuo
+    assert apr_on_capital(0.005, 168, 2) == pytest.approx(0.005 * 8760 / 168)
+    assert apr_on_capital(0.005, 168, 4) == pytest.approx(2 * apr_on_capital(0.005, 168, 2))

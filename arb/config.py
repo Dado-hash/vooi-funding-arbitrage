@@ -26,3 +26,16 @@ def load_config(path: Path = ROOT / "config.toml") -> dict:
 
 def taker_fee(cfg: dict, exchange: str) -> float:
     return float(cfg.get("fees", {}).get("taker", {}).get(exchange, 0.0005))
+
+
+TRADING_MODES = ("notify", "execute")
+
+
+def trading_mode() -> str:
+    """`notify` (default): Claude manda istruzioni, l'utente opera su VOOI.
+    `execute`: proposte con Approva/Rifiuta, Claude esegue via MCP dopo il tap."""
+    load_dotenv()
+    mode = (os.environ.get("TRADING_MODE") or "notify").strip().lower()
+    if mode not in TRADING_MODES:
+        raise ValueError(f"TRADING_MODE={mode!r} non valido: usa notify o execute")
+    return mode

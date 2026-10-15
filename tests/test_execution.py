@@ -45,6 +45,11 @@ class FakeExchange:
         raise AssertionError(tool)
 
 
+@pytest.fixture(autouse=True)
+def execute_mode(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "execute")
+
+
 @pytest.fixture
 def conn():
     c = sqlite3.connect(":memory:")
@@ -134,3 +139,14 @@ def test_telegram_poll_only_accepts_allowed_user(conn, monkeypatch):
     assert decisions == [{"id": p["id"], "decision": "approved"}]
     assert ("answerCallbackQuery", {"callback_query_id": "x", "text": "Non autorizzato"}) in sent
     assert conn.execute("SELECT value FROM kv WHERE key='tg_offset'").fetchone()["value"] == "4"
+
+
+def test_notify_mode_never_executes(conn, monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "notify")
+    fx = FakeExchange()
+    p = _approved(conn, fx)
+    r = execute(fx, load_config(), conn, p["id"])
+    assert r["status"] == "refused" and not fx.orders
+    text = approvals.manual_instructions(approvals.get(conn, p["id"]))
+    assert "Long hyperliquid / Short lighter" in text and "1201 MET" in text
+    assert "arbitrage-desk/met-hyperliquid-usdc-lighter-usdc" in text

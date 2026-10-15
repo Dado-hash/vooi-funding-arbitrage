@@ -6,7 +6,7 @@ import sys
 from collections import Counter
 
 from .client import MCPError, VooiClient
-from .config import DATA_DIR, load_config
+from .config import DATA_DIR, load_config, trading_mode
 from .scan import (ScanParams, fetch_strategies, pair_id, render_table, run_scan,
                    top_per_venue_pair)
 from . import store
@@ -107,10 +107,22 @@ def cmd_propose(args, cfg, client) -> None:
         p = approvals.propose_open(client, conn, args.long, args.short, notional, args.leverage, args.reason, ttl)
     else:
         p = approvals.propose_close(client, conn, args.long, args.short, args.reason, ttl)
+    mode = trading_mode()
+    if mode == "notify":
+        text = approvals.manual_instructions(p)
+        approvals.set_status(conn, p["id"], "notified")
+        print(text)
+        if not args.no_send:
+            from .telegram import send
+            send(text)
+        print(f"\n[notify] istruzioni #{p['id']} {'inviate' if not args.no_send else 'create'}: l'utente opera su VOOI. "
+              f"Al prossimo ciclo verifica con `arb monitor` e, se aperta, `arb journal open`.")
+        return
     print(p["summary"])
     if not args.no_send:
         approvals.set_status(conn, p["id"], "pending", tg_message_id=send_proposal(p))
-        print(f"\nproposta #{p['id']} inviata su Telegram, scade {p['expires_ts']}")
+        print(f"\n[execute] proposta #{p['id']} inviata, scade {p['expires_ts']}. "
+              f"Ora: `uv run arb tg wait {p['id']}` in background, poi `uv run arb execute {p['id']}` se approvata.")
     else:
         print(f"\nproposta #{p['id']} creata (non inviata)")
 
@@ -193,6 +205,22 @@ def cmd_journal(args, cfg, client) -> None:
         _dump(store.journal_list(conn, open_only=args.open))
 
 
+def cmd_daily(args, cfg, client) -> None:
+    """Riepilogo giornaliero: `due` se oggi (ora locale) non è ancora stato inviato e sono passate le 9."""
+    from datetime import datetime
+
+    conn = store.connect()
+    today = datetime.now().date().isoformat()
+    row = conn.execute("SELECT value FROM kv WHERE key = 'daily_sent'").fetchone()
+    if args.mark:
+        conn.execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('daily_sent', ?)", (today,))
+        conn.commit()
+        print("marcato")
+    else:
+        due = (row is None or row["value"] != today) and datetime.now().hour >= 9
+        print("due" if due else "done")
+
+
 def cmd_call(args, cfg, client) -> None:
     _dump(client.call(args.tool, json.loads(args.args) if args.args else {}))
 
@@ -249,8 +277,12 @@ def main() -> None:
     pp.add_argument("--ttl", type=float, help="minuti di validità")
     pp.add_argument("--no-send", action="store_true")
 
+    sub.add_parser("mode", help="mostra TRADING_MODE (notify | execute)")
+    da = sub.add_parser("daily", help="riepilogo giornaliero: dovuto? (--mark dopo l'invio)")
+    da.add_argument("--mark", action="store_true")
+
     pls = sub.add_parser("proposals", help="elenco proposte")
-    pls.add_argument("--status", choices=["pending", "approved", "rejected", "expired", "stale", "executed", "failed"])
+    pls.add_argument("--status", choices=["pending", "notified", "approved", "rejected", "expired", "stale", "executed", "failed"])
 
     ex = sub.add_parser("execute", help="esegue una proposta APPROVATA")
     ex.add_argument("id")
@@ -290,9 +322,12 @@ def main() -> None:
     args = ap.parse_args()
     cfg = load_config()
     try:
-        client = None if args.cmd in ("journal", "tg", "proposals") else VooiClient()
+        if args.cmd == "mode":
+            print(trading_mode())
+            return
+        client = None if args.cmd in ("journal", "tg", "proposals", "daily") else VooiClient()
         {"scan": cmd_scan, "venues": cmd_venues, "portfolio": cmd_portfolio, "plan": cmd_plan, "tg": cmd_tg,
-         "propose": cmd_propose, "proposals": cmd_proposals, "execute": cmd_execute,
+         "propose": cmd_propose, "daily": cmd_daily, "proposals": cmd_proposals, "execute": cmd_execute,
          "pair": cmd_pair, "monitor": cmd_monitor,
          "journal": cmd_journal, "call": cmd_call}[args.cmd](args, cfg, client)
     except MCPError as e:

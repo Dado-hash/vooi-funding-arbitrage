@@ -39,6 +39,14 @@ max_price_drift = 0.01             # scostamento massimo del prezzo dal riferime
 max_basis_worsening = 0.002        # peggioramento massimo del basis (20 bps) prima di riproporre
 proposal_ttl_min = 15              # validità di una proposta: dopo, l'approvazione non vale più
 
+# Regole del ciclo di monitoraggio (.claude/skills/ciclo/SKILL.md)
+[strategy]
+max_strategies = 2                 # strategie in parallelo
+notional_per_strategy = 500        # USD per gamba: 2 × $500 = $1000 di notional per venue
+leverage = 2                       # leva usata su entrambe le gambe
+min_apr_on_capital = 0.20          # rendimento netto annualizzato minimo sul capitale impegnato (margine), leva inclusa
+max_breakeven_h = 72               # ore massime per coprire i costi
+
 [monitor]
 min_liq_distance = 0.15     # sotto questa distanza dal prezzo di liquidazione: allarme margine
 max_imbalance = 0.05        # sbilanciamento notional long/short tollerato
