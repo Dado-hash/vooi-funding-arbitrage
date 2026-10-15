@@ -46,6 +46,7 @@ notional_per_strategy = 500        # USD per gamba: 2 × $500 = $1000 di notiona
 leverage = 2                       # leva usata su entrambe le gambe
 min_apr_on_capital = 0.20          # rendimento netto annualizzato minimo sul capitale impegnato (margine), leva inclusa
 max_breakeven_h = 72               # ore massime per coprire i costi
+capital_buffer = 0.10              # margine extra richiesto per venue oltre notional/leva (fee, oscillazioni)
 
 [monitor]
 min_liq_distance = 0.15     # sotto questa distanza dal prezzo di liquidazione: allarme margine

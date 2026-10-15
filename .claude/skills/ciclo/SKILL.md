@@ -47,12 +47,18 @@ Lavora nella cartella del progetto. Usa solo comandi `uv run arb …`. Contesto 
      - la coppia non è già aperta.
    - Preferisci il flag `regime recente` assente. Se c'è, citalo nel messaggio come rischio.
    - Per aprire: `uv run arb propose open LONG SHORT --notional <notional_per_strategy> --leverage 2 --reason "<spread 24h/7d/30g, rendimento sul capitale, BE, rischi>"`.
+   - `arb propose open` controlla da solo il capitale (`get_accounts`): margine richiesto per venue = notional/leva + `capital_buffer` (10%).
+     - Fondi sbilanciati tra le venue: in `notify` il messaggio inizia con "PRIMA DI APRIRE: sposta $X da A a B". In `execute` la proposta non viene creata e arriva solo l'avviso di spostare i fondi.
+     - Capitale totale insufficiente: nessuna proposta, solo l'avviso.
+     - Se l'output dice `proposta NON creata`, fermati qui per questo ciclo.
+     - **Non** spostare mai fondi tu: lo fa l'utente su VOOI (Transfer).
    - In modalità `execute`, subito dopo: `uv run arb tg wait <id>` **in background**. Quando termina con `approved`, esegui `uv run arb execute <id>`. Con `rejected` o `expired` non fare nulla.
    - Al massimo una nuova apertura per ciclo. Se nessuna coppia raggiunge l'obiettivo, non aprire: restare liquidi va bene.
 
 5. **Riepilogo giornaliero**
    - `uv run arb daily`. Se stampa `due`, manda con `uv run arb tg send` un riepilogo con:
      - posizioni aperte;
+     - saldi per venue (`uv run arb capital`);
      - funding incassato e uPnL;
      - spread attuali contro quelli d'ingresso;
      - le prime 3 opportunità dello scan.

@@ -74,6 +74,14 @@ def check(client: VooiClient, cfg: dict, p: dict) -> list[str]:
             problems.append(f"notional ${notional:,.0f} oltre il limite ${lim['max_notional_per_leg']:,.0f}")
         o["_market"] = m
     if p["kind"] == "open":
+        from .capital import fetch_balances, plan_capital
+
+        needs: dict[str, float] = {}
+        for o in pay["orders"]:
+            needs[o["exchange"]] = needs.get(o["exchange"], 0) + float(o["size"]) * float(o["_market"]["price"]) / pay["leverage"]
+        cap = plan_capital(fetch_balances(client), needs, buffer=0.02)
+        if not cap["ok"]:
+            problems += [l for l in cap["lines"][1:]]
         if pay["leverage"] > lim["max_leverage"]:
             problems.append(f"leva {pay['leverage']}x oltre il limite {lim['max_leverage']}x")
         by_side = {o["side"]: o["_market"] for o in pay["orders"]}

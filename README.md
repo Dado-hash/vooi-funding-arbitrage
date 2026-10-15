@@ -39,6 +39,7 @@ I parametri di default (venue, notional, orizzonte, soglie, fee) stanno in `conf
 | `uv run arb execute <id> [--dry-run]` | Esegue una proposta APPROVATA (con `--dry-run` fa solo i controlli) e manda l'esito su Telegram |
 | `uv run arb proposals [--status pending]` | Elenco proposte |
 | `uv run arb mode` | Mostra `TRADING_MODE` |
+| `uv run arb capital [--notional 500 --leverage 2]` | Saldi per venue. Con `--notional`: margine richiesto e spostamenti necessari per aprire una strategia |
 | `uv run arb daily [--mark]` | Dice se il riepilogo giornaliero è dovuto (`due`/`done`). `--mark` dopo l'invio |
 | `uv run arb tg send "testo"` / `echo testo \| uv run arb tg send` | Invia un messaggio su Telegram |
 | `uv run arb tg chat-id` | Mostra le chat che hanno scritto al bot (per ricavare `TELEGRAM_CHAT_ID`) |
@@ -186,6 +187,17 @@ Setup:
 
 **Da fare al primo utilizzo reale**: il formato di `get_positions` non è ancora stato verificato con posizioni vere. Il primo trade va fatto con una size minima (per esempio $20 per gamba), per validare la verifica delle posizioni prima di usare il notional pieno.
 
+### Controllo del capitale
+
+Prima di ogni proposta di apertura, `arb propose` legge i saldi con `get_accounts`. Per ogni venue confronta il disponibile con il margine richiesto: `notional / leva × (1 + capital_buffer)`, con buffer del 10% per fee e oscillazioni.
+- **Fondi sbilanciati tra le venue**: suggerisce lo spostamento ("sposta $X USDC da Lighter a Hyperliquid", su VOOI → Transfer), arrotondato a $5.
+  - `notify`: lo spostamento è il primo passo del messaggio.
+  - `execute`: la proposta con i pulsanti non viene creata finché i fondi non sono a posto, così non approvi un trade che non si può eseguire.
+- **Capitale totale insufficiente**: nessuna proposta, solo l'avviso con quanto manca.
+- **Esecuzione**: `arb execute` ricontrolla il margine prima degli ordini, con un buffer del 2%.
+- **Trasferimenti**: Claude li suggerisce soltanto, mai li esegue.
+- **Da validare**: il formato di `get_accounts` non è ancora stato verificato con exchange collegati (`normalize_account` prova più nomi di campo). Va controllato al primo `arb capital` con fondi reali. I mercati HIP-3 di Hyperliquid (`xyz:`, …) hanno un margine separato dal conto principale: il ciclo non li apre.
+
 ### Modalità notify
 
 Con `TRADING_MODE=notify`, `arb propose` non manda pulsanti ma istruzioni da seguire su VOOI:
@@ -253,6 +265,7 @@ Messaggi, per evitare spam:
 
 ## Changelog
 
+- **2026-10-15**: controllo del capitale prima delle proposte di apertura (`arb/capital.py`, `get_accounts`): margine per venue con buffer del 10%, spostamenti suggeriti tra venue, nessuna proposta se mancano fondi. `arb execute` ricontrolla il margine. Nuovo comando `arb capital`, parametro `capital_buffer`.
 - **2026-10-15**: obiettivo minimo del 20% annuo netto sul capitale, leva inclusa (`min_apr_on_capital`, `leverage` in `[strategy]`). Nuovo campo `apr_on_capital` e flag `sotto obiettivo`. `arb portfolio` e `/ciclo` scartano le coppie sotto soglia. Sostituisce `min_net_horizon`.
 - **2026-10-15**: `TRADING_MODE` in `.env` (`notify` di default: istruzioni manuali con link all'Arbitrage Desk; `execute`: approvazione ed esecuzione). Comando di progetto `/ciclo` con la procedura del loop, regole `[strategy]` in config, `arb mode`, `arb daily`.
 - **2026-10-15**: permesso di progetto per `uv run arb *` (loop senza conferme in Claude Code).
