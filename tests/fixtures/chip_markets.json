@@ -1,0 +1,4 @@
+{"hasMore":false,"total":2,"items":[
+{"id":"229","baseSymbol":"CHIP","unifiedSymbol":"CHIP","maxLeverage":3,"openInterest":"9512773.863516","quoteSymbol":"USDC","volume24h":8012635.29,"fundingInterval":1,"exchange":"hyperliquid","nextFundingTime":"2026-10-15T18:00:00.000Z","fundingRate":"0.0000125","price":"0.045962"},
+{"id":"CHIPUSDT","baseSymbol":"CHIP","unifiedSymbol":"CHIP","maxLeverage":10,"openInterest":"71241.3127676","quoteSymbol":"USDT","volume24h":209838.82,"fundingInterval":4,"exchange":"aster","nextFundingTime":"2026-10-15T20:00:00.000Z","fundingRate":"-0.00002275","price":"0.04589382"}
+]}

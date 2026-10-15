@@ -1,0 +1,46 @@
+# Parametri di default. I flag della CLI hanno la precedenza.
+
+[scan]
+venues = ["hyperliquid", "lighter"] # [] = tutte le venue. Scelte con `arb venues` il 2026-10-15
+both_legs = true                    # entrambe le gambe devono stare in `venues` (come la UI VOOI)
+notional_usd = 1000                 # notional per gamba: $500 di margine per venue × leva 2x
+horizon_h = 168                     # orizzonte di holding (7 giorni): con fee taker, 72h non bastano a coprire i costi
+min_hist_apr = 0.05                 # APR medio 7d minimo per entrare in classifica (0.05 = 5%)
+min_volume_usd = 100000             # volume 24h minimo della strategia (somma gambe)
+min_oi_usd = 50000                  # open interest minimo per gamba
+deep = 15                           # coppie su cui calcolare slippage e costi reali
+history_days = 30                   # storico per le metriche di persistenza (pos_all, mean_all); le finestre 24h/72h/7d restano
+
+# Venue on-chain (registrazione con firma wallet, nessuna API key). `arb scan --dex`.
+[venues]
+dex = ["hyperliquid", "lighter", "aster", "extended", "ondo", "robinhood"]
+
+# Fee taker per venue, in frazione (0.00045 = 4.5 bps). Valori da `get_quotes` (feesBps) il 2026-10-15,
+# fee VOOI incluse. Servono solo come stima nello stadio 2: lo stadio 3 legge le fee reali del singolo
+# mercato da `get_quotes` (i mercati HIP-3 possono avere fee diverse).
+[fees.taker]
+hyperliquid = 0.00045
+lighter = 0.00025
+aster = 0.0006
+extended = 0.00045
+ondo = 0.00045
+robinhood = 0.00055
+binance = 0.0005
+bybit = 0.00055
+mexc = 0.0002
+gate = 0.0005
+
+# Limiti di `arb execute`, controllati su ogni proposta approvata indipendentemente da cosa contiene.
+[execution]
+venues = ["hyperliquid", "lighter"]
+max_notional_per_leg = 1000        # USD
+max_leverage = 2
+max_price_drift = 0.01             # scostamento massimo del prezzo dal riferimento della proposta
+max_basis_worsening = 0.002        # peggioramento massimo del basis (20 bps) prima di riproporre
+proposal_ttl_min = 15              # validità di una proposta: dopo, l'approvazione non vale più
+
+[monitor]
+min_liq_distance = 0.15     # sotto questa distanza dal prezzo di liquidazione: allarme margine
+max_imbalance = 0.05        # sbilanciamento notional long/short tollerato
+exit_lookahead_h = 24       # finestra su cui valutare se lo spread previsto resta positivo
+rotate_min_uplift = 0.5     # ruota solo se il guadagno netto atteso migliora di almeno +50%
