@@ -240,7 +240,7 @@ Messaggi, per evitare spam:
 2. Fra le rimanenti preferisci, in quest'ordine: `score` alto, `pos72` ≥ 80%, `BE` ben sotto l'orizzonte, half-life lunga, OI e volume adeguati al notional.
 3. Diffida dell'`APRnow` molto sopra l'`APR7d`. Di solito è un picco: il modello lo sconta già, ma va detto all'utente.
 4. Per le 2-3 migliori esegui `arb pair` e, se serve, guarda `get_funding_rate_history` delle singole gambe: chi guida lo spread? È un funding negativo strutturale o un evento?
-5. Dimensiona con `arb portfolio` (capitale attuale: $1000, cioè $500 di margine per venue con leva 2x, fino a $1000 di notional per venue). I mercati HIP-3 (`xyz:`, `mkts:`, `io:`) su Hyperliquid accettano solo isolated margin.
+5. Dimensiona con `arb portfolio` (capitale attuale: circa $116, cioè $58 per venue, leva 2x, una strategia da $100 per gamba; i limiti stanno in `[strategy]`). I mercati HIP-3 (`xyz:`, `mkts:`, `io:`) su Hyperliquid accettano solo isolated margin.
 6. Proponi all'utente coppia, direzione, notional, leva, rendimento atteso e pessimista, break-even e rischi. Allega il piano di `arb plan`.
 7. Ogni operazione passa da `arb propose`, poi `arb tg wait <id>` in background, poi `arb execute <id>` solo se approvata. **Mai** chiamare direttamente i tool di scrittura dell'MCP (`create_order`, `set_leverage`, trasferimenti, ...). Mai trasferimenti né prelievi.
 8. Ciclo di monitoraggio (loop orario):
@@ -265,6 +265,7 @@ Messaggi, per evitare spam:
 
 ## Changelog
 
+- **2026-10-15**: primo uso reale. Hyperliquid e Lighter collegati con circa $58 ciascuno (Hyperliquid in `unifiedAccount`: lo spot USDC vale come margine). `[strategy]` adattato al capitale: 1 strategia, $100 per gamba. Parser dei saldi allineato al formato reale di `get_accounts`. Telegram verificato.
 - **2026-10-15**: controllo del capitale prima delle proposte di apertura (`arb/capital.py`, `get_accounts`): margine per venue con buffer del 10%, spostamenti suggeriti tra venue, nessuna proposta se mancano fondi. `arb execute` ricontrolla il margine. Nuovo comando `arb capital`, parametro `capital_buffer`.
 - **2026-10-15**: obiettivo minimo del 20% annuo netto sul capitale, leva inclusa (`min_apr_on_capital`, `leverage` in `[strategy]`). Nuovo campo `apr_on_capital` e flag `sotto obiettivo`. `arb portfolio` e `/ciclo` scartano le coppie sotto soglia. Sostituisce `min_net_horizon`.
 - **2026-10-15**: `TRADING_MODE` in `.env` (`notify` di default: istruzioni manuali con link all'Arbitrage Desk; `execute`: approvazione ed esecuzione). Comando di progetto `/ciclo` con la procedura del loop, regole `[strategy]` in config, `arb mode`, `arb daily`.

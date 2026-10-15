@@ -378,6 +378,12 @@ def main() -> None:
          "journal": cmd_journal, "call": cmd_call}[args.cmd](args, cfg, client)
     except MCPError as e:
         sys.exit(f"errore MCP: {e}")
+    except Exception as e:
+        from .telegram import TelegramError
+
+        if isinstance(e, TelegramError):
+            sys.exit(f"errore Telegram: {e}")
+        raise
 
 
 if __name__ == "__main__":

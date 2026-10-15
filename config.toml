@@ -41,8 +41,8 @@ proposal_ttl_min = 15              # validità di una proposta: dopo, l'approvaz
 
 # Regole del ciclo di monitoraggio (.claude/skills/ciclo/SKILL.md)
 [strategy]
-max_strategies = 2                 # strategie in parallelo
-notional_per_strategy = 500        # USD per gamba: 2 × $500 = $1000 di notional per venue
+max_strategies = 1                 # strategie in parallelo (capitale attuale ~$116: una sola)
+notional_per_strategy = 100        # USD per gamba: con ~$58 per venue a 2x (margine $50 + buffer 10%)
 leverage = 2                       # leva usata su entrambe le gambe
 min_apr_on_capital = 0.20          # rendimento netto annualizzato minimo sul capitale impegnato (margine), leva inclusa
 max_breakeven_h = 72               # ore massime per coprire i costi

@@ -184,3 +184,21 @@ def test_normalize_account_variants():
 
     assert normalize_account({"exchange": "lighter", "availableBalance": "12.5"})["available"] == 12.5
     assert normalize_account({"exchange": "hyperliquid", "accountValue": "100", "marginUsed": "30"})["available"] == 70
+
+
+@pytest.mark.parametrize("mode,hl_expected", [("unifiedAccount", 58.224269), ("disabled", 0.0)])
+def test_fetch_balances_real_format(mode, hl_expected):
+    import json
+    from pathlib import Path
+
+    from arb.capital import fetch_balances
+
+    accounts = json.loads((Path(__file__).parent / "fixtures" / "accounts.json").read_text())
+
+    class C:
+        def call(self, tool, args=None):
+            return accounts if tool == "get_accounts" else {"abstractionMode": mode}
+
+    b = fetch_balances(C())
+    assert b["lighter"]["available"] == 58.0
+    assert b.get("hyperliquid", {"available": 0.0})["available"] == pytest.approx(hl_expected)

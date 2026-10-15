@@ -12,7 +12,9 @@ from .client import VooiClient
 AVAILABLE_KEYS = ("availableBalance", "availableMargin", "available", "withdrawable", "freeMargin",
                   "free", "availableToTrade")
 EQUITY_KEYS = ("equity", "totalEquity", "accountValue", "totalBalance", "balance", "total")
-USED_KEYS = ("marginUsed", "usedMargin", "totalMarginUsed", "initialMargin")
+USED_KEYS = ("marginInUse", "marginUsed", "usedMargin", "totalMarginUsed", "initialMargin")
+# Collaterale contato 1:1 in USD. Altri token (es. asset spot) vengono ignorati.
+STABLES = {"USDC", "USDT", "USDH", "USD", "USDE", "USD1", "USDT0"}
 
 
 def _num(d: dict, keys: tuple) -> float | None:
@@ -32,16 +34,24 @@ def normalize_account(a: dict) -> dict:
     if available is None and equity is not None:
         available = equity - (used or 0)
     return {"exchange": a.get("exchange") or a.get("venue"), "equity": equity, "used": used,
-            "available": available, "raw": a}
+            "available": available, "token": a.get("token"), "type": a.get("type"), "raw": a}
 
 
 def fetch_balances(client: VooiClient) -> dict[str, dict]:
     """Saldi aggregati per venue: {exchange: {"equity", "available", "used", "accounts"}}."""
     res = client.call("get_accounts", {})
     items = res if isinstance(res, list) else (res.get("items") or res.get("accounts") or [])
+    accounts = [normalize_account(a) for a in items]
+    # Hyperliquid: il saldo spot vale come margine perp solo con un abstraction mode unificato.
+    hl_spot_usable = True
+    if any(a["exchange"] == "hyperliquid" and a["type"] == "spot" for a in accounts):
+        mode = (client.call("get_account_info", {"exchange": "hyperliquid"}) or {}).get("abstractionMode")
+        hl_spot_usable = mode in ("unifiedAccount", "portfolioMargin")
     out: dict[str, dict] = {}
-    for a in map(normalize_account, items):
-        if not a["exchange"]:
+    for a in accounts:
+        if not a["exchange"] or (a["token"] and a["token"].upper() not in STABLES):
+            continue
+        if a["exchange"] == "hyperliquid" and a["type"] == "spot" and not hl_spot_usable:
             continue
         v = out.setdefault(a["exchange"], {"equity": 0.0, "available": 0.0, "used": 0.0, "accounts": 0})
         v["equity"] += a["equity"] or 0
