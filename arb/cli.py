@@ -121,27 +121,35 @@ def cmd_propose(args, cfg, client) -> None:
                 send(text)
             print("\n[capitale] proposta NON creata: fondi da sistemare. Ricontrolla al prossimo ciclo.")
             return
-        p = approvals.propose_open(client, conn, args.long, args.short, notional, args.leverage, args.reason, ttl)
+        ex = cfg.get("execution", {})
+        frac = ex.get("tp_sl_liq_fraction", 0.7) if ex.get("tp_sl", True) else None
+        p = approvals.propose_open(client, conn, args.long, args.short, notional, args.leverage, args.reason, ttl,
+                                   tp_sl_fraction=frac)
     else:
         p = approvals.propose_close(client, conn, args.long, args.short, args.reason, ttl)
+    from html import escape
+
+    from .telegram import plain
+
+    cap_html = "\n".join(escape(l) for l in capital["lines"]) if capital else ""
     if mode == "notify":
         text = approvals.manual_instructions(p)
         if capital:
             if capital["moves"]:
-                text = "PRIMA DI APRIRE:\n" + "\n".join(capital["lines"]) + "\n\n" + text
+                text = "⚠️ <b>PRIMA DI APRIRE</b>\n" + cap_html + "\n\n" + text
             else:
-                text += "\n\n" + "\n".join(capital["lines"])
+                text += "\n\n💼 " + cap_html
         approvals.set_status(conn, p["id"], "notified")
-        print(text)
+        print(plain(text))
         if not args.no_send:
             from .telegram import send
-            send(text)
+            send(text, as_html=True)
         print(f"\n[notify] istruzioni #{p['id']} {'inviate' if not args.no_send else 'create'}: l'utente opera su VOOI. "
               f"Al prossimo ciclo verifica con `arb monitor` e, se aperta, `arb journal open`.")
         return
     if capital:
-        p["summary"] += "\n\n" + "\n".join(capital["lines"])
-    print(p["summary"])
+        p["summary"] += "\n\n💼 " + cap_html
+    print(plain(p["summary"]))
     if not args.no_send:
         approvals.set_status(conn, p["id"], "pending", tg_message_id=send_proposal(p))
         print(f"\n[execute] proposta #{p['id']} inviata, scade {p['expires_ts']}. "

@@ -23,7 +23,10 @@ class FakeExchange:
         self.available = available or {"hyperliquid": 500.0, "lighter": 500.0}
         self.positions: dict[str, float] = {}   # exchange -> size con segno (MET)
         self.orders: list[dict] = []
+        self.triggers: list[dict] = []          # TP/SL aperti (figli dei bracket)
+        self.cancelled: list[str] = []
         self.leverage_set: list[tuple] = []
+        self.liq = {"hyperliquid": "0.22", "lighter": "0.52"}
 
     def call(self, tool, args=None):
         if tool == "get_markets":
@@ -36,12 +39,23 @@ class FakeExchange:
             self.leverage_set.append((args["exchange"], args["leverage"]))
             return {"ok": True}
         if tool == "get_positions":
-            return [{"exchange": ex, "baseSymbol": "MET", "size": str(s), "markPrice": "0.3745"}
-                    for ex, s in self.positions.items() if s]
+            return [{"exchange": ex, "baseSymbol": "MET", "size": str(s), "markPrice": "0.3745",
+                     "liquidationPrice": self.liq[ex]} for ex, s in self.positions.items() if s]
+        if tool == "get_open_orders":
+            return [t for t in self.triggers if t["exchange"] in args["exchanges"]]
+        if tool == "cancel_order":
+            self.cancelled.append(args["orderId"])
+            self.triggers = [t for t in self.triggers if t["orderId"] != args["orderId"]]
+            return {"ok": True}
         if tool == "create_order":
             if args["exchange"] == self.fail_on and not args["reduceOnly"]:
                 raise MCPError("create_order: rejected by venue")
             self.orders.append(args)
+            for kind in ("stopLoss", "takeProfit"):
+                if kind in args:
+                    self.triggers.append({"exchange": args["exchange"], "baseSymbol": "MET", "reduceOnly": True,
+                                          "type": kind, "orderId": f"t{len(self.orders)}{kind}",
+                                          "triggerPrice": args[kind]["triggerPrice"]})
             delta = float(args["size"]) * (1 if args["side"] == "buy" else -1)
             self.positions[args["exchange"]] = self.positions.get(args["exchange"], 0) + delta
             return {"orderId": str(len(self.orders))}
@@ -62,8 +76,9 @@ def conn():
     return c
 
 
-def _approved(conn, fx):
-    p = approvals.propose_open(fx, conn, "MET:hyperliquid", "MET:lighter", 450, 2, "test", ttl_min=15)
+def _approved(conn, fx, tp_sl=None):
+    p = approvals.propose_open(fx, conn, "MET:hyperliquid", "MET:lighter", 450, 2, "test", ttl_min=15,
+                               tp_sl_fraction=tp_sl)
     approvals.set_status(conn, p["id"], "approved")
     return p
 
@@ -151,7 +166,7 @@ def test_notify_mode_never_executes(conn, monkeypatch):
     r = execute(fx, load_config(), conn, p["id"])
     assert r["status"] == "refused" and not fx.orders
     text = approvals.manual_instructions(approvals.get(conn, p["id"]))
-    assert "Long hyperliquid / Short lighter" in text and "1201 MET" in text
+    assert "long Hyperliquid / short Lighter" in text and "<code>1201</code> MET" in text
     assert "arbitrage-desk/met-hyperliquid-usdc-lighter-usdc" in text
 
 
@@ -202,3 +217,58 @@ def test_fetch_balances_real_format(mode, hl_expected):
     b = fetch_balances(C())
     assert b["lighter"]["available"] == 58.0
     assert b.get("hyperliquid", {"available": 0.0})["available"] == pytest.approx(hl_expected)
+
+
+def test_tp_sl_levels_close_both_legs_before_liquidation():
+    from arb.protection import bracket, check_against_liq, tp_sl_levels
+
+    hl, lt = MARKETS[("hyperliquid", "MET")], MARKETS[("lighter", "MET")]
+    lv = tp_sl_levels(hl, lt, leverage=2, fraction=0.7)
+    # liquidazione isolated stimata: long HL (max 3x) −33%, short Lighter (max 5x) +40%
+    assert lv["liq_long_move"] == pytest.approx(-1 / 3) and lv["liq_short_move"] == pytest.approx(0.4)
+    assert lv["down"] == "0.28724" and lv["up"] == "0.47955"   # 5 cifre significative, verso il prezzo
+    assert bracket("buy", lv) == {"stopLoss": {"triggerPrice": "0.28724"}, "takeProfit": {"triggerPrice": "0.47955"}}
+    assert bracket("sell", lv)["stopLoss"]["triggerPrice"] == "0.47955"   # stessi prezzi, invertiti
+    # il caso di ieri: stop dello short a 0.5306 con liquidazione a 0.5170
+    assert check_against_liq({"down": "0.22753", "up": "0.53062"}, 0.2144, 0.5170) == [
+        "stop dello short 0.53062 oltre la liquidazione 0.517"]
+
+
+def test_open_with_tp_sl_sends_brackets_and_checks_them(conn):
+    fx = FakeExchange()
+    p = _approved(conn, fx, tp_sl=0.7)
+    r = execute(fx, load_config(), conn, p["id"])
+    assert r["status"] == "executed", r
+    long_o = next(o for o in fx.orders if o["side"] == "buy")
+    assert long_o["stopLoss"] == {"triggerPrice": "0.28724"} and long_o["takeProfit"] == {"triggerPrice": "0.47955"}
+    assert len(fx.triggers) == 4
+    assert any(x.startswith("TP/SL ok") for x in r["log"]), r["log"]
+
+    fx.liq["lighter"] = "0.45"    # liquidazione reale più vicina dello stop: va segnalato
+    fx.positions, fx.triggers = {}, []
+    r = execute(fx, load_config(), conn, _approved(conn, fx, tp_sl=0.7)["id"])
+    assert any("stop dello short 0.47955 oltre la liquidazione" in x for x in r["log"]), r["log"]
+
+
+def test_close_and_unwind_cancel_leftover_tp_sl(conn):
+    fx = FakeExchange()
+    execute(fx, load_config(), conn, _approved(conn, fx, tp_sl=0.7)["id"])
+    p = approvals.propose_close(fx, conn, "MET:hyperliquid", "MET:lighter", "test", ttl_min=15)
+    approvals.set_status(conn, p["id"], "approved")
+    assert execute(fx, load_config(), conn, p["id"])["status"] == "executed"
+    assert not fx.triggers and len(fx.cancelled) == 4
+    assert all("stopLoss" not in o for o in fx.orders if o["reduceOnly"])   # le chiusure non portano TP/SL
+
+    fx = FakeExchange(fail_on="hyperliquid")       # la seconda gamba fallisce: TP/SL della prima cancellati
+    r = execute(fx, load_config(), conn, _approved(conn, fx, tp_sl=0.7)["id"])
+    assert r["status"] == "failed" and not fx.triggers and fx.positions["lighter"] == 0
+
+
+def test_notify_instructions_include_tp_sl(conn, monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "notify")
+    p = _approved(conn, FakeExchange(), tp_sl=0.7)
+    text = approvals.manual_instructions(approvals.get(conn, p["id"]))
+    assert "Long Hyperliquid: SL <code>0.28724</code> · TP <code>0.47955</code>" in text
+    assert "Short Lighter: SL <code>0.47955</code> · TP <code>0.28724</code>" in text
+    assert "<b>3. Controlla</b>" in text
+    assert "SL 0.28724" in telegram.plain(text)

@@ -180,12 +180,13 @@ Setup:
 ### Esecuzione
 
 - **Leva**: viene impostata su entrambe le gambe.
+- **TP/SL**: gli ordini d'apertura li portano già (bracket `stopLoss`/`takeProfit` di `create_order`). Dopo l'apertura `arb execute` controlla che ci siano 2 ordini per gamba e che gli stop scattino prima della liquidazione reale. Se qualcosa non torna, lo segnala nell'esito.
 - **Gambe**: una alla volta, ordini market, prima il book più sottile. Dopo ogni ordine `get_positions` verifica la size.
 - **Seconda gamba fallita**: la prima viene chiusa subito (reduce-only), per non restare mai senza copertura.
-- **Chiusure**: sempre reduce-only.
+- **Chiusure**: sempre reduce-only. Dopo la chiusura, e anche dopo una chiusura di sicurezza, vengono cancellati gli ordini reduce-only (TP/SL) rimasti sulle gambe chiuse: resterebbero attivi e potrebbero colpire una posizione futura sullo stesso asset.
 - **Journal**: le aperture riuscite vengono registrate automaticamente.
 
-**Da fare al primo utilizzo reale**: il formato di `get_positions` non è ancora stato verificato con posizioni vere. Il primo trade va fatto con una size minima (per esempio $20 per gamba), per validare la verifica delle posizioni prima di usare il notional pieno.
+**Formato delle posizioni**: verificato il 2026-10-16 con una posizione reale su Hyperliquid e Lighter (`tests/fixtures/positions.json`). VOOI non restituisce il mark price: `normalize_position` lo ricava da prezzo d'entrata e uPnL, e da lì calcola notional e distanza dalla liquidazione. Il flusso di `arb execute` non è ancora stato provato con ordini veri.
 
 ### Controllo del capitale
 
@@ -198,12 +199,30 @@ Prima di ogni proposta di apertura, `arb propose` legge i saldi con `get_account
 - **Trasferimenti**: Claude li suggerisce soltanto, mai li esegue.
 - **Da validare**: il formato di `get_accounts` non è ancora stato verificato con exchange collegati (`normalize_account` prova più nomi di campo). Va controllato al primo `arb capital` con fondi reali. I mercati HIP-3 di Hyperliquid (`xyz:`, …) hanno un margine separato dal conto principale: il ciclo non li apre.
 
+### TP/SL di protezione
+
+Le due gambe stanno su venue diverse: se il prezzo si muove molto, una gamba va verso la liquidazione mentre l'altra guadagna, e il guadagno non la copre senza un trasferimento. Per questo ogni apertura ha due livelli di prezzo, comuni alle due gambe (`arb/protection.py`):
+- **giù** (`down`): stop-loss del long e take-profit dello short;
+- **su** (`up`): stop-loss dello short e take-profit del long.
+
+Così entrambe le gambe si chiudono insieme allo stesso prezzo. I livelli stanno a `tp_sl_liq_fraction` (70%) della distanza di liquidazione stimata in isolated, `1/leva − 1/(2 × leva massima)`, calcolata per la venue di ciascuna gamba. In cross la liquidazione reale è più lontana, quindi la stima è prudente. A 2x su MET Hyperliquid/Lighter: −23% e +28%, contro liquidazioni stimate a −33% e +40%. I prezzi hanno al massimo 5 cifre significative e sono arrotondati verso il prezzo corrente.
+
+Errore da evitare (16/10, impostato a mano): stop dello short su Lighter a 0.5306 con liquidazione a 0.5170. Lo short sarebbe stato liquidato prima dello stop, e il long sarebbe rimasto aperto da solo. Si disattiva con `tp_sl = false` in `[execution]`.
+
+### Messaggi Telegram
+
+Le istruzioni (`notify`) e le proposte (`execute`) sono in HTML Telegram: titoli in grassetto, size e prezzi in `code` (si copiano con un tap), link all'Arbitrage Desk, ora di scadenza locale. Dopo il tap la nota "Approvata"/"Rifiutata" si aggiunge in coda e la formattazione resta. I messaggi liberi del ciclo (`arb tg send`) restano testo semplice. Nel terminale lo stesso testo si stampa senza tag.
+
 ### Modalità notify
 
 Con `TRADING_MODE=notify`, `arb propose` non manda pulsanti ma istruzioni da seguire su VOOI:
 - coppia e direzione, con il link alla pagina dell'Arbitrage Desk;
 - leva, tipo Taker–Taker, size per gamba;
+- TP/SL per gamba, con i prezzi da inserire;
+- cosa controllare dopo l'apertura;
 - condizioni per non aprire, se lo spread o il prezzo sono cambiati.
+
+Le istruzioni di chiusura ricordano di cancellare i TP/SL rimasti.
 
 Al ciclo successivo Claude ritrova la posizione aperta con `arb monitor` e la registra nel journal.
 
@@ -255,7 +274,8 @@ Messaggi, per evitare spam:
 ## Limiti noti
 
 - Le fee in `config.toml` vengono da `get_quotes` senza exchange collegati. Con un account collegato il tier potrebbe essere diverso: lo stadio 3 usa comunque `get_quotes`.
-- Il formato di `get_positions` non è ancora stato verificato con posizioni reali: al momento non c'è nessun exchange collegato. `normalize_position` prova più nomi di campo. Va validato alla prima posizione aperta.
+- I TP/SL come bracket sugli ordini market non sono ancora stati provati da `arb execute` con ordini veri. VOOI li ha creati correttamente aprendo dall'Arbitrage Desk: su Hyperliquid come ordini trigger separati, su Lighter legati alla posizione. Al primo uso controlla l'esito ("TP/SL ok" oppure ATTENZIONE).
+- Il mark price delle posizioni è ricavato da entrata e uPnL di VOOI: può differire di qualche bps dal mark della venue (su Lighter `data.positionValue` usa un prezzo leggermente diverso).
 - Lo slippage di uscita è stimato uguale a quello di entrata. Il basis non entra nello score.
 - Lo storico dello spread sulle venue con funding a 4h/8h è una funzione a gradini: `phi` risulta più alto.
 - I costi assumono ordini taker, per scelta: niente ordini limit, per non rischiare che venga eseguita una sola gamba.
@@ -265,6 +285,8 @@ Messaggi, per evitare spam:
 
 ## Changelog
 
+- **2026-10-16**: TP/SL automatici (`arb/protection.py`, `tp_sl` e `tp_sl_liq_fraction` in `[execution]`): due livelli comuni alle gambe, al 70% della distanza di liquidazione stimata. In `execute` sono negli ordini d'apertura, con verifica dopo l'apertura e cancellazione dei TP/SL rimasti dopo chiusure e chiusure di sicurezza. In `notify` sono nelle istruzioni. Messaggi di istruzioni e proposte riformattati in HTML Telegram.
+- **2026-10-16**: parser delle posizioni allineato al formato reale di `get_positions` (MET Hyperliquid/Lighter). Senza mark price, notional e distanza dalla liquidazione risultavano `null`: il monitor non dava mai l'allarme margine e le proposte di chiusura non avevano il prezzo di riferimento. Ora il mark si ricava da entrata e uPnL. Test con la risposta reale.
 - **2026-10-15**: primo uso reale. Hyperliquid e Lighter collegati con circa $58 ciascuno (Hyperliquid in `unifiedAccount`: lo spot USDC vale come margine). `[strategy]` adattato al capitale: 1 strategia, $100 per gamba. Parser dei saldi allineato al formato reale di `get_accounts`. Telegram verificato.
 - **2026-10-15**: controllo del capitale prima delle proposte di apertura (`arb/capital.py`, `get_accounts`): margine per venue con buffer del 10%, spostamenti suggeriti tra venue, nessuna proposta se mancano fondi. `arb execute` ricontrolla il margine. Nuovo comando `arb capital`, parametro `capital_buffer`.
 - **2026-10-15**: obiettivo minimo del 20% annuo netto sul capitale, leva inclusa (`min_apr_on_capital`, `leverage` in `[strategy]`). Nuovo campo `apr_on_capital` e flag `sotto obiettivo`. `arb portfolio` e `/ciclo` scartano le coppie sotto soglia. Sostituisce `min_net_horizon`.

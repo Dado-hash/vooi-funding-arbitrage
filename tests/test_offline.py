@@ -125,6 +125,22 @@ def test_pairing_positions():
     assert [u["symbol"] for u in unmatched] == ["ETH"]
 
 
+def test_real_positions_mark_and_liq_distance():
+    """Formato reale di VOOI: niente mark price, si ricava da entrata e uPnL."""
+    from arb.monitor import _liq_distance
+
+    pairs, unmatched = group_pairs([normalize_position(p) for p in load("positions.json")])
+    assert len(pairs) == 1 and not unmatched
+    long, short = pairs[0]["long"], pairs[0]["short"]
+    assert (long["exchange"], short["exchange"]) == ("hyperliquid", "lighter")
+    assert long["mark_price"] == pytest.approx(0.37927 - 2.6796 / 290)
+    assert short["mark_price"] == pytest.approx(0.37905 - 2.4998 / 290)
+    assert long["notional"] == pytest.approx(290 * long["mark_price"])
+    assert short["size"] == 290
+    assert _liq_distance(long) == pytest.approx(0.42, abs=0.01)
+    assert _liq_distance(short) == pytest.approx(0.40, abs=0.01)
+
+
 def test_plan_same_size_and_thin_book_first():
     from arb.plan import build_plan
 

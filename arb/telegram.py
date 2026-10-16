@@ -1,6 +1,8 @@
 """Telegram: notifiche e approvazione delle proposte con pulsanti. Nessun comando testuale viene interpretato."""
 
+import html
 import os
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -42,15 +44,24 @@ def chunks(text: str, size: int = MAX_LEN) -> list[str]:
     return parts
 
 
-def send(text: str) -> int:
-    """Invia `text` (testo semplice) alla chat configurata. Restituisce il numero di messaggi."""
+def plain(text: str) -> str:
+    """HTML Telegram → testo semplice (per il terminale)."""
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
+def send(text: str, as_html: bool = False) -> int:
+    """Invia `text` alla chat configurata (testo semplice, o HTML Telegram con `as_html`).
+    Restituisce il numero di messaggi."""
     load_dotenv()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not chat_id:
         raise TelegramError("TELEGRAM_CHAT_ID mancante in .env: esegui `arb tg chat-id`")
+    if as_html and len(text) > MAX_LEN:  # spezzare l'HTML romperebbe i tag
+        text, as_html = plain(text), False
     parts = chunks(text)
     for part in parts:
-        _call("sendMessage", chat_id=chat_id, text=part, disable_web_page_preview=True)
+        _call("sendMessage", chat_id=chat_id, text=part, disable_web_page_preview=True,
+              **({"parse_mode": "HTML"} if as_html else {}))
     return len(parts)
 
 
@@ -76,14 +87,15 @@ def _allowed_user() -> int:
 
 def send_proposal(p: dict) -> int:
     """Invia la proposta con i pulsanti Approva/Rifiuta. Restituisce il message_id."""
-    expires = p["expires_ts"][11:16]
-    text = f"PROPOSTA #{p['id']} (scade {expires} UTC)\n\n{p['summary']}"
+    from .approvals import local_hm
+
+    text = f"<i>Proposta #{p['id']} · scade alle {local_hm(p['expires_ts'])}</i>\n\n{p['summary']}"
     keyboard = {"inline_keyboard": [[
         {"text": "✅ Approva", "callback_data": f"a:{p['id']}"},
         {"text": "❌ Rifiuta", "callback_data": f"r:{p['id']}"},
     ]]}
     msg = _call("sendMessage", chat_id=_allowed_user(), text=text, reply_markup=keyboard,
-                disable_web_page_preview=True)
+                disable_web_page_preview=True, parse_mode="HTML")
     return msg["message_id"]
 
 
@@ -133,8 +145,10 @@ def poll(conn, timeout: int = 0) -> list[dict]:
         _call("answerCallbackQuery", callback_query_id=cq["id"], text=note)
         msg = cq.get("message")
         if msg:
+            # `entities` conserva la formattazione: il testo aggiunto in coda non sposta gli offset.
             _call("editMessageText", chat_id=msg["chat"]["id"], message_id=msg["message_id"],
-                  text=f"{msg.get('text', '')}\n\n→ {note}")
+                  text=f"{msg.get('text', '')}\n\n→ {note}", disable_web_page_preview=True,
+                  **({"entities": msg["entities"]} if msg.get("entities") else {}))
     return decisions
 
 

@@ -8,6 +8,9 @@ Controlli prima di ogni ordine:
 
 Apertura: leva su entrambe le gambe, poi una gamba alla volta (prima il book più sottile),
 verifica della posizione dopo ogni ordine. Se la seconda gamba fallisce, la prima viene chiusa.
+Gli ordini d'apertura portano i TP/SL della proposta (bracket); dopo l'apertura si controlla che siano
+attivi e che gli stop scattino prima della liquidazione reale. Dopo ogni chiusura (anche di sicurezza)
+si cancellano gli ordini reduce-only rimasti sulle gambe chiuse.
 """
 
 import time
@@ -17,6 +20,7 @@ from .client import MCPError, VooiClient
 from .config import trading_mode
 from .monitor import _asset_key, fetch_positions
 from .plan import _market
+from .protection import check_against_liq
 from .store import journal_open, now_iso
 
 
@@ -104,12 +108,59 @@ def _ensure_leverage(client: VooiClient, exchange: str, asset: str, leverage: fl
 
 
 def _order(client: VooiClient, o: dict, log: list) -> dict:
-    res = client.call("create_order", {
-        "exchange": o["exchange"], "asset": o["asset"], "side": o["side"], "size": o["size"],
-        "reduceOnly": o["reduceOnly"],
-    })
-    log.append(f"ordine {o['exchange']} {o['side']} {o['size']} {o['asset']}{' reduce-only' if o['reduceOnly'] else ''}: ok")
+    args = {"exchange": o["exchange"], "asset": o["asset"], "side": o["side"], "size": o["size"],
+            "reduceOnly": o["reduceOnly"]}
+    args |= {k: o[k] for k in ("takeProfit", "stopLoss") if o.get(k) and not o["reduceOnly"]}
+    res = client.call("create_order", args)
+    tpsl = f" (SL {o['stopLoss']['triggerPrice']}, TP {o['takeProfit']['triggerPrice']})" if "stopLoss" in args else ""
+    log.append(f"ordine {o['exchange']} {o['side']} {o['size']} {o['asset']}"
+               f"{' reduce-only' if o['reduceOnly'] else ''}{tpsl}: ok")
     return res
+
+
+def _open_orders(client: VooiClient, exchanges: list[str]) -> list[dict]:
+    res = client.call("get_open_orders", {"exchanges": sorted(set(exchanges))})
+    return res if isinstance(res, list) else (res.get("items") or [])
+
+
+def _cancel_leftovers(client: VooiClient, legs: list[dict], log: list) -> None:
+    """Cancella gli ordini reduce-only (TP/SL) rimasti sulle gambe senza più posizione:
+    resterebbero attivi e potrebbero colpire una posizione futura sullo stesso asset."""
+    try:
+        still_open = {(p["exchange"], _asset_key(p["symbol"])) for p in fetch_positions(client) if p["size"]}
+        targets = {(o["exchange"], _asset_key(o["asset"])) for o in legs} - still_open
+        for oo in _open_orders(client, [o["exchange"] for o in legs]):
+            key = (oo.get("exchange"), _asset_key(str(oo.get("baseSymbol") or "")))
+            if key in targets and oo.get("reduceOnly"):
+                client.call("cancel_order", {"exchange": key[0], "asset": oo["baseSymbol"], "orderId": str(oo["orderId"])})
+                log.append(f"cancellato {oo.get('type') or 'ordine'} {key[0]} {oo['baseSymbol']} #{oo['orderId']}")
+    except MCPError as e:
+        log.append(f"ATTENZIONE: pulizia TP/SL non riuscita ({e}): cancella a mano gli ordini rimasti")
+
+
+def _check_protection(client: VooiClient, pay: dict, log: list) -> None:
+    """Dopo l'apertura: TP/SL presenti su entrambe le gambe e stop prima della liquidazione reale."""
+    levels = pay.get("protection")
+    if not levels:
+        return
+    try:
+        legs = {o["side"]: o for o in pay["orders"]}
+        pos = {p["side"]: p for p in fetch_positions(client)
+               for o in pay["orders"] if p["exchange"] == o["exchange"] and _asset_key(p["symbol"]) == _asset_key(o["asset"])}
+        oos = _open_orders(client, [o["exchange"] for o in pay["orders"]])
+        for side in ("buy", "sell"):
+            o = legs[side]
+            n = sum(1 for oo in oos if oo.get("exchange") == o["exchange"] and oo.get("reduceOnly")
+                    and _asset_key(str(oo.get("baseSymbol") or "")) == _asset_key(o["asset"]))
+            if n < 2:
+                log.append(f"ATTENZIONE: su {o['exchange']} trovati {n} TP/SL invece di 2: impostali a mano")
+        problems = check_against_liq(levels, (pos.get("long") or {}).get("liq_price"),
+                                     (pos.get("short") or {}).get("liq_price"))
+        log += [f"ATTENZIONE: {p}: correggi a mano" for p in problems]
+        if not problems:
+            log.append(f"TP/SL ok: chiusura a {levels['down']} / {levels['up']}, prima della liquidazione")
+    except MCPError as e:
+        log.append(f"ATTENZIONE: verifica TP/SL non riuscita ({e}): controlla a mano su VOOI")
 
 
 def execute(client: VooiClient, cfg: dict, conn, pid: str) -> dict:
@@ -151,10 +202,15 @@ def execute(client: VooiClient, cfg: dict, conn, pid: str) -> dict:
                     _order(client, undo, log)
                 except MCPError as e2:
                     log.append(f"ERRORE CHIUSURA DI SICUREZZA {o['exchange']} {o['asset']}: {e2} — INTERVIENI A MANO")
+            _cancel_leftovers(client, done, log)
         result = {"id": pid, "status": "failed", "log": log}
         approvals.set_status(conn, pid, "failed", executed_ts=now_iso(), result=result)
         return result
 
+    if p["kind"] == "open":
+        _check_protection(client, pay, log)
+    else:
+        _cancel_leftovers(client, orders, log)
     if p["kind"] == "open":
         long_o = next(o for o in orders if o["side"] == "buy")
         short_o = next(o for o in orders if o["side"] == "sell")

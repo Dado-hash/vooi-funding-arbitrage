@@ -1,7 +1,8 @@
 """Controllo delle posizioni aperte: accoppia le gambe, valuta rischio e spread, propone azioni.
 
-Il formato di `get_positions` va confermato con dati reali: `normalize_position` prova più nomi
-di campo e conserva sempre il record grezzo in `raw`.
+`normalize_position` prova più nomi di campo e conserva sempre il record grezzo in `raw`.
+Formato reale di VOOI (Hyperliquid e Lighter) in `tests/fixtures/positions.json`: niente mark price,
+che si ricava da prezzo d'entrata e uPnL.
 """
 
 from collections import defaultdict
@@ -39,7 +40,12 @@ def normalize_position(p: dict) -> dict:
         side = "short"
     elif size is not None:
         side = "long" if size > 0 else "short"
+    entry = _num(_first(p, "entryPrice", "avgEntryPrice"))
+    upnl = _num(_first(p, "unrealizedPnl", "unrealizedPnL", "pnl", "upnl"))
     mark = _num(_first(p, "markPrice", "price", "lastPrice"))
+    if mark is None and entry and upnl is not None and size and side in ("long", "short"):
+        # VOOI non espone il mark: si ricava da uPnL = (mark − entrata) × size con segno.
+        mark = entry + upnl / (abs(size) if side == "long" else -abs(size))
     notional = _num(_first(p, "notional", "positionValue", "notionalUsd", "value"))
     if notional is None and size is not None and mark is not None:
         notional = abs(size) * mark
@@ -51,11 +57,11 @@ def normalize_position(p: dict) -> dict:
         "side": side,
         "size": abs(size) if size is not None else None,
         "notional": abs(notional) if notional is not None else None,
-        "entry_price": _num(_first(p, "entryPrice", "avgEntryPrice")),
+        "entry_price": entry,
         "mark_price": mark,
         "liq_price": _num(_first(p, "liquidationPrice", "liqPrice", "liquidationPx")),
         "leverage": _num(_first(p, "leverage")),
-        "upnl": _num(_first(p, "unrealizedPnl", "unrealizedPnL", "pnl", "upnl")),
+        "upnl": upnl,
         "funding_fee": _num(_first(p, "fundingFee", "cumFunding")),
         "raw": p,
     }

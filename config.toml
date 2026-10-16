@@ -38,6 +38,8 @@ max_leverage = 2
 max_price_drift = 0.01             # scostamento massimo del prezzo dal riferimento della proposta
 max_basis_worsening = 0.002        # peggioramento massimo del basis (20 bps) prima di riproporre
 proposal_ttl_min = 15              # validità di una proposta: dopo, l'approvazione non vale più
+tp_sl = true                       # TP/SL negli ordini d'apertura (e nelle istruzioni notify)
+tp_sl_liq_fraction = 0.7           # livelli al 70% della distanza di liquidazione stimata (isolated)
 
 # Regole del ciclo di monitoraggio (.claude/skills/ciclo/SKILL.md)
 [strategy]
