@@ -1,9 +1,9 @@
-"""Metriche sullo spread di funding orario e previsione del rendimento su un orizzonte.
+"""Metrics on the hourly funding spread and return forecast over a holding horizon.
 
-Convenzioni:
-- spread = short_rate - long_rate, frazione per ora (positivo = incassi).
-- Rendimenti espressi come frazione del notional di UNA gamba (stessa convenzione della UI VOOI:
-  "$100 · 3 days" = notional per gamba).
+Conventions:
+- spread = short_rate - long_rate, fraction per hour (positive = you collect).
+- Returns are a fraction of the notional of ONE leg (same convention as the VOOI UI:
+  "$100 · 3 days" = notional per leg).
 """
 
 import math
@@ -21,14 +21,14 @@ class SpreadStats:
     mean_72h: float
     mean_7d: float
     std_7d: float
-    pos_24h: float      # quota di ore con spread > 0
+    pos_24h: float      # share of hours with spread > 0
     pos_72h: float
     pos_7d: float
-    streak_h: int       # ore consecutive con spread > 0 fino ad ora
-    phi: float          # autocorrelazione lag-1: persistenza delle deviazioni dalla media
-    half_life_h: float | None  # ore perché la deviazione attuale si dimezzi
+    streak_h: int       # consecutive hours with spread > 0 up to now
+    phi: float          # lag-1 autocorrelation: persistence of deviations from the mean
+    half_life_h: float | None  # hours for the current deviation to halve
     p25_72h: float
-    mean_all: float     # media su tutto lo storico disponibile (es. 30 giorni con --days 30)
+    mean_all: float     # mean over the whole available history (e.g. 30 days with --days 30)
     pos_all: float
 
     def as_dict(self) -> dict:
@@ -57,7 +57,7 @@ def _lag1_autocorr(xs: list[float]) -> float:
 
 
 def spread_stats(series: list[float], now: float | None = None) -> SpreadStats | None:
-    """`series`: spread orario dal più vecchio al più recente. `now`: spread live, se più fresco."""
+    """`series`: hourly spread, oldest first. `now`: live spread, if fresher."""
     if len(series) < 6:
         return None
     w24, w72, w7d = _tail(series, 24), _tail(series, 72), _tail(series, 168)
@@ -93,9 +93,9 @@ def long_run_mean(s: SpreadStats) -> float:
 
 
 def expected_cum(s: SpreadStats, horizon_h: float, start_spread: float | None = None) -> float:
-    """Funding cumulato atteso su `horizon_h` ore con modello AR(1) mean-reverting.
+    """Expected cumulative funding over `horizon_h` hours with a mean-reverting AR(1) model.
 
-    Lo spread attuale torna verso la media di lungo periodo con persistenza `phi`:
+    The current spread reverts to the long-run mean with persistence `phi`:
     E[s_{t+k}] = mu + phi^k (s_t - mu).
     """
     mu = long_run_mean(s)
@@ -106,12 +106,12 @@ def expected_cum(s: SpreadStats, horizon_h: float, start_spread: float | None = 
 
 
 def conservative_cum(s: SpreadStats, horizon_h: float) -> float:
-    """Scenario pessimista: la media più bassa tra 24h, 72h e 7d tenuta per tutto l'orizzonte."""
+    """Pessimistic scenario: the lowest of the 24h, 72h and 7d means, held for the whole horizon."""
     return horizon_h * min(s.mean_24h, s.mean_72h, s.mean_7d)
 
 
 def breakeven_hours(s: SpreadStats, cost: float, max_h: int = 24 * 30) -> int | None:
-    """Prime ore di holding dopo cui il funding atteso copre i costi round-trip."""
+    """First holding hour after which expected funding covers the round-trip costs."""
     if cost <= 0:
         return 0
     for h in range(1, max_h + 1):
@@ -123,28 +123,28 @@ def breakeven_hours(s: SpreadStats, cost: float, max_h: int = 24 * 30) -> int | 
 @dataclass
 class Evaluation:
     horizon_h: float
-    exp_return: float       # funding + P&L di basis attesi sull'orizzonte (frazione del notional)
-    cons_return: float      # idem, scenario pessimista
-    cost_rt: float          # fee + slippage round-trip
+    exp_return: float       # expected funding + basis P&L over the horizon (fraction of notional)
+    cons_return: float      # same, pessimistic scenario
+    cost_rt: float          # round-trip fees + slippage
     net_exp: float
     net_cons: float
-    net_blend: float        # media di atteso e pessimista, al netto dei costi
-    score_apr: float        # net_blend annualizzato: metrica di ranking
+    net_blend: float        # mean of expected and pessimistic, net of costs
+    score_apr: float        # annualized net_blend: the ranking metric
     breakeven_h: int | None
 
     def as_dict(self) -> dict:
         return asdict(self)
 
 
-BASIS_CAPTURE = 0.5  # quota del basis d'ingresso che si assume di incassare in media
+BASIS_CAPTURE = 0.5  # share of the entry basis assumed to be captured on average
 
 
 def basis_pnl(basis_entry: float | None, basis_mean: float | None = None) -> tuple[float, float]:
-    """P&L di prezzo atteso e pessimista: `b0 − b_uscita`, b = (prezzo short − prezzo long)/mid.
+    """Expected and pessimistic price P&L: `b0 − b_exit`, b = (short price − long price)/mid.
 
-    Con storico (`basis_mean`): atteso = b0 − media storica. Senza storico: metà del basis
-    d'ingresso (convergenza parziale verso zero). Pessimista: un basis sfavorevole converge,
-    uno favorevole persiste.
+    With history (`basis_mean`): expected = b0 − historical mean. Without: half the entry basis
+    (partial convergence to zero). Pessimistic: an unfavorable basis converges, a favorable one
+    persists.
     """
     if basis_entry is None:
         return 0.0, 0.0

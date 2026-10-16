@@ -1,8 +1,8 @@
-"""Storico del funding per singolo mercato, con cache SQLite.
+"""Per-market funding history with a SQLite cache.
 
-Lo spread di una coppia è `funding_short − funding_long` ora per ora (verificato contro
-`get_funding_spread_chart`). Scaricando lo storico per mercato (N chiamate) si ottiene lo spread
-di tutte le coppie (~N²) senza una chiamata per coppia, e senza dover pre-filtrare per APR attuale.
+A pair's spread is `funding_short − funding_long`, hour by hour (verified against
+`get_funding_spread_chart`). Fetching history per market (N calls) gives the spread of every pair
+(~N²) without one call per pair, and without pre-filtering on the current APR.
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from .client import MCPError, VooiClient
 
 WORKERS = 8
-FRESH_H = 1.5  # se l'ultimo punto in cache è più recente di così, niente fetch
+FRESH_H = 1.5  # skip the fetch if the newest cached point is more recent than this
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS funding_history (
@@ -51,7 +51,7 @@ class FundingHistory:
         return parse(row["first"]), parse(row["last"])
 
     def refresh(self, legs: set[Leg], days: int) -> dict:
-        """Aggiorna la cache per `legs`. Restituisce {"fetched", "cached", "errors"}."""
+        """Refreshes the cache for `legs`. Returns {"fetched", "cached", "errors"}."""
         now = datetime.now(timezone.utc)
         today = now.date()
         window_start = today - timedelta(days=days)
@@ -61,7 +61,7 @@ class FundingHistory:
             backfill = first is None or first.date() > window_start + timedelta(days=1)
             if not backfill and (now - last).total_seconds() < FRESH_H * 3600:
                 continue
-            # Cache più corta della finestra richiesta: riscarica tutto. Altrimenti solo dall'ultimo giorno.
+            # Cache shorter than the requested window: fetch it all. Otherwise only from the last day.
             start = window_start if backfill else last.date()
             jobs.append((leg, start.isoformat()))
 
@@ -97,5 +97,5 @@ class FundingHistory:
 
 
 def pair_spread(long: dict[str, float], short: dict[str, float]) -> list[float]:
-    """Spread orario short − long sulle ore presenti in entrambe le serie, dal più vecchio."""
+    """Hourly short − long spread over the hours present in both series, oldest first."""
     return [short[ts] - long[ts] for ts in sorted(long.keys() & short.keys())]

@@ -1,13 +1,16 @@
-"""Esecuzione di una proposta APPROVATA via MCP VOOI.
+"""Execution of an APPROVED proposal via the VOOI MCP.
 
-Controlli prima di ogni ordine:
-- proposta in stato `approved` e non scaduta;
-- limiti di `[execution]` in config.toml (venue, notional, leva), indipendenti dalla proposta;
-- scostamento del prezzo dal riferimento e, per le aperture, spread di funding ancora positivo
-  e basis non peggiorato oltre soglia. Se qualcosa è cambiato troppo: stato `stale`, si ripropone.
+Checks before every order:
+- proposal in status `approved` and not expired;
+- `[execution]` limits in config.toml (venue, notional, leverage), independent of the proposal;
+- price drift from the reference and, for openings, funding spread still positive
+  and basis not worsened beyond the threshold. If something changed too much: status `stale`, to be re-proposed.
 
-Apertura: leva su entrambe le gambe, poi una gamba alla volta (prima il book più sottile),
-verifica della posizione dopo ogni ordine. Se la seconda gamba fallisce, la prima viene chiusa.
+Opening: leverage on both legs, then one leg at a time (thinnest book first),
+position check after each order. If the second leg fails, the first is closed.
+The opening orders carry the proposal's TP/SL (bracket); after opening, the code checks that they are
+active and that the stops trigger before the real liquidation. After every close (including safety closes)
+the reduce-only orders left on the closed legs are cancelled.
 """
 
 import time
@@ -17,6 +20,7 @@ from .client import MCPError, VooiClient
 from .config import trading_mode
 from .monitor import _asset_key, fetch_positions
 from .plan import _market
+from .protection import check_against_liq
 from .store import journal_open, now_iso
 
 
@@ -54,24 +58,24 @@ def _wait_size(client: VooiClient, exchange: str, asset: str, side: str, target:
 
 
 def check(client: VooiClient, cfg: dict, p: dict) -> list[str]:
-    """Controlli pre-esecuzione. Lista vuota = ok."""
+    """Pre-execution checks. Empty list = ok."""
     lim, pay, problems = _limits(cfg), p["payload"], []
     if p["status"] != "approved":
-        problems.append(f"stato {p['status']}, non approved")
+        problems.append(f"status {p['status']}, not approved")
     if approvals.is_expired(p):
-        problems.append("proposta scaduta")
+        problems.append("proposal expired")
     for o in pay["orders"]:
         if o["exchange"] not in lim["venues"]:
-            problems.append(f"venue {o['exchange']} non abilitata in [execution].venues")
+            problems.append(f"venue {o['exchange']} not enabled in [execution].venues")
         m = _market(client, o["exchange"], o["asset"])
         price = float(m["price"])
         if o["ref_price"]:
             drift = abs(price - o["ref_price"]) / o["ref_price"]
             if drift > lim["max_price_drift"]:
-                problems.append(f"prezzo {o['asset']} su {o['exchange']} mosso del {drift:.2%} dal riferimento")
+                problems.append(f"price of {o['asset']} on {o['exchange']} moved {drift:.2%} from the reference")
         notional = float(o["size"]) * price
         if not o["reduceOnly"] and notional > lim["max_notional_per_leg"] * 1.02:
-            problems.append(f"notional ${notional:,.0f} oltre il limite ${lim['max_notional_per_leg']:,.0f}")
+            problems.append(f"notional ${notional:,.0f} over the limit ${lim['max_notional_per_leg']:,.0f}")
         o["_market"] = m
     if p["kind"] == "open":
         from .capital import fetch_balances, plan_capital
@@ -83,16 +87,16 @@ def check(client: VooiClient, cfg: dict, p: dict) -> list[str]:
         if not cap["ok"]:
             problems += [l for l in cap["lines"][1:]]
         if pay["leverage"] > lim["max_leverage"]:
-            problems.append(f"leva {pay['leverage']}x oltre il limite {lim['max_leverage']}x")
+            problems.append(f"leverage {pay['leverage']}x over the limit {lim['max_leverage']}x")
         by_side = {o["side"]: o["_market"] for o in pay["orders"]}
         lm, sm = by_side["buy"], by_side["sell"]
         spread = float(sm["fundingRate"]) - float(lm["fundingRate"])
         if spread <= 0:
-            problems.append(f"spread di funding ora {spread * 8760:+.0%} APR: non conviene entrare")
+            problems.append(f"funding spread now {spread * 8760:+.0%} APR: not worth entering")
         lp, sp = float(lm["price"]), float(sm["price"])
         basis = (sp - lp) / ((sp + lp) / 2)
         if basis < pay["ref_basis"] - lim["max_basis_worsening"]:
-            problems.append(f"basis peggiorato: {basis * 1e4:+.1f} bps contro {pay['ref_basis'] * 1e4:+.1f}")
+            problems.append(f"basis worsened: {basis * 1e4:+.1f} bps against {pay['ref_basis'] * 1e4:+.1f}")
     return problems
 
 
@@ -100,24 +104,71 @@ def _ensure_leverage(client: VooiClient, exchange: str, asset: str, leverage: fl
     current = client.call("get_market_settings", {"asset": asset, "exchange": exchange})
     if float(current.get("leverage") or 0) != leverage:
         client.call("set_leverage", {"asset": asset, "exchange": exchange, "leverage": leverage})
-        log.append(f"leva {exchange} {asset}: {current.get('leverage')}x → {leverage:g}x")
+        log.append(f"leverage {exchange} {asset}: {current.get('leverage')}x → {leverage:g}x")
 
 
 def _order(client: VooiClient, o: dict, log: list) -> dict:
-    res = client.call("create_order", {
-        "exchange": o["exchange"], "asset": o["asset"], "side": o["side"], "size": o["size"],
-        "reduceOnly": o["reduceOnly"],
-    })
-    log.append(f"ordine {o['exchange']} {o['side']} {o['size']} {o['asset']}{' reduce-only' if o['reduceOnly'] else ''}: ok")
+    args = {"exchange": o["exchange"], "asset": o["asset"], "side": o["side"], "size": o["size"],
+            "reduceOnly": o["reduceOnly"]}
+    args |= {k: o[k] for k in ("takeProfit", "stopLoss") if o.get(k) and not o["reduceOnly"]}
+    res = client.call("create_order", args)
+    tpsl = f" (SL {o['stopLoss']['triggerPrice']}, TP {o['takeProfit']['triggerPrice']})" if "stopLoss" in args else ""
+    log.append(f"order {o['exchange']} {o['side']} {o['size']} {o['asset']}"
+               f"{' reduce-only' if o['reduceOnly'] else ''}{tpsl}: ok")
     return res
+
+
+def _open_orders(client: VooiClient, exchanges: list[str]) -> list[dict]:
+    res = client.call("get_open_orders", {"exchanges": sorted(set(exchanges))})
+    return res if isinstance(res, list) else (res.get("items") or [])
+
+
+def _cancel_leftovers(client: VooiClient, legs: list[dict], log: list) -> None:
+    """Cancels the reduce-only orders (TP/SL) left on legs that no longer have a position:
+    they would stay active and could hit a future position on the same asset."""
+    try:
+        still_open = {(p["exchange"], _asset_key(p["symbol"])) for p in fetch_positions(client) if p["size"]}
+        targets = {(o["exchange"], _asset_key(o["asset"])) for o in legs} - still_open
+        for oo in _open_orders(client, [o["exchange"] for o in legs]):
+            key = (oo.get("exchange"), _asset_key(str(oo.get("baseSymbol") or "")))
+            if key in targets and oo.get("reduceOnly"):
+                client.call("cancel_order", {"exchange": key[0], "asset": oo["baseSymbol"], "orderId": str(oo["orderId"])})
+                log.append(f"cancelled {oo.get('type') or 'order'} {key[0]} {oo['baseSymbol']} #{oo['orderId']}")
+    except MCPError as e:
+        log.append(f"WARNING: TP/SL cleanup failed ({e}): cancel the leftover orders by hand")
+
+
+def _check_protection(client: VooiClient, pay: dict, log: list) -> None:
+    """After opening: TP/SL present on both legs and stops before the real liquidation."""
+    levels = pay.get("protection")
+    if not levels:
+        return
+    try:
+        legs = {o["side"]: o for o in pay["orders"]}
+        pos = {p["side"]: p for p in fetch_positions(client)
+               for o in pay["orders"] if p["exchange"] == o["exchange"] and _asset_key(p["symbol"]) == _asset_key(o["asset"])}
+        oos = _open_orders(client, [o["exchange"] for o in pay["orders"]])
+        for side in ("buy", "sell"):
+            o = legs[side]
+            n = sum(1 for oo in oos if oo.get("exchange") == o["exchange"] and oo.get("reduceOnly")
+                    and _asset_key(str(oo.get("baseSymbol") or "")) == _asset_key(o["asset"]))
+            if n < 2:
+                log.append(f"WARNING: on {o['exchange']} found {n} TP/SL instead of 2: set them manually")
+        problems = check_against_liq(levels, (pos.get("long") or {}).get("liq_price"),
+                                     (pos.get("short") or {}).get("liq_price"))
+        log += [f"WARNING: {p}: fix manually" for p in problems]
+        if not problems:
+            log.append(f"TP/SL ok: close at {levels['down']} / {levels['up']}, before liquidation")
+    except MCPError as e:
+        log.append(f"WARNING: TP/SL check failed ({e}): verify by hand on VOOI")
 
 
 def execute(client: VooiClient, cfg: dict, conn, pid: str) -> dict:
     if trading_mode() != "execute":
-        return {"id": pid, "status": "refused", "problems": ["TRADING_MODE non è execute: Claude non esegue ordini"]}
+        return {"id": pid, "status": "refused", "problems": ["TRADING_MODE is not execute: the agent never places orders"]}
     p = approvals.get(conn, pid)
     if not p:
-        raise ExecutionError(f"proposta {pid} inesistente")
+        raise ExecutionError(f"proposal {pid} does not exist")
     problems = check(client, cfg, p)
     if problems:
         approvals.set_status(conn, pid, "stale" if p["status"] == "approved" else p["status"],
@@ -139,22 +190,27 @@ def execute(client: VooiClient, cfg: dict, conn, pid: str) -> dict:
             target = before + float(o["size"]) if not o["reduceOnly"] else max(before - float(o["size"]), 0)
             after = _wait_size(client, o["exchange"], o["asset"], side, target, tol=float(o["size"]) * 0.01)
             if abs(after - target) > float(o["size"]) * 0.01:
-                raise ExecutionError(f"{o['exchange']} {o['asset']}: posizione {after:g}, attesa {target:g}")
+                raise ExecutionError(f"{o['exchange']} {o['asset']}: position {after:g}, expected {target:g}")
             done.append(o)
     except (MCPError, ExecutionError) as e:
-        log.append(f"ERRORE: {e}")
+        log.append(f"ERROR: {e}")
         if p["kind"] == "open" and done:
-            # Mai lasciare una gamba scoperta: chiudi quelle già aperte.
+            # Never leave a leg uncovered: close the ones already open.
             for o in done:
                 undo = {**o, "side": "sell" if o["side"] == "buy" else "buy", "reduceOnly": True}
                 try:
                     _order(client, undo, log)
                 except MCPError as e2:
-                    log.append(f"ERRORE CHIUSURA DI SICUREZZA {o['exchange']} {o['asset']}: {e2} — INTERVIENI A MANO")
+                    log.append(f"SAFETY CLOSE ERROR {o['exchange']} {o['asset']}: {e2} — ACT MANUALLY")
+            _cancel_leftovers(client, done, log)
         result = {"id": pid, "status": "failed", "log": log}
         approvals.set_status(conn, pid, "failed", executed_ts=now_iso(), result=result)
         return result
 
+    if p["kind"] == "open":
+        _check_protection(client, pay, log)
+    else:
+        _cancel_leftovers(client, orders, log)
     if p["kind"] == "open":
         long_o = next(o for o in orders if o["side"] == "buy")
         short_o = next(o for o in orders if o["side"] == "sell")
@@ -168,9 +224,9 @@ def execute(client: VooiClient, cfg: dict, conn, pid: str) -> dict:
 
 
 def render_result(r: dict) -> str:
-    head = {"executed": "ESEGUITA", "failed": "FALLITA", "stale": "NON ESEGUITA (condizioni cambiate)",
-            "refused": "NON ESEGUITA (modalità notify)"}.get(
+    head = {"executed": "EXECUTED", "failed": "FAILED", "stale": "NOT EXECUTED (conditions changed)",
+            "refused": "NOT EXECUTED (notify mode)"}.get(
         r["status"], r["status"])
-    lines = [f"PROPOSTA #{r['id']}: {head}"]
+    lines = [f"PROPOSAL #{r['id']}: {head}"]
     lines += [f"- {x}" for x in r.get("problems", []) + r.get("log", [])]
     return "\n".join(lines)

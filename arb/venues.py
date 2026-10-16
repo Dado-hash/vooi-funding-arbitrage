@@ -1,4 +1,4 @@
-"""Confronto fra combinazioni di venue: dove conviene operare."""
+"""Venue combination comparison: where trading pays off."""
 
 import statistics
 from collections import Counter, defaultdict
@@ -7,7 +7,7 @@ from .scan import fmt_pct, is_viable, venue_pair
 
 
 def summarize(result: dict, universe: Counter) -> list[dict]:
-    """`universe`: numero di coppie nell'universo per combinazione di venue."""
+    """`universe`: number of pairs in the universe per venue combination."""
     notional = result["params"]["notional_usd"]
     groups: dict[str, list[dict]] = defaultdict(list)
     for c in result["top"] + result["rest"]:
@@ -18,7 +18,7 @@ def summarize(result: dict, universe: Counter) -> list[dict]:
         deep = [c for c in cs if c.get("deep")]
         viable = sorted((c for c in deep if is_viable(c)), key=lambda c: c["eval"]["net_blend"], reverse=True)
         top3 = viable[:3]
-        # Spread strutturali: media su tutto lo storico ≥ 15% APR e positivi ≥ 75% delle ore.
+        # Structural spreads: mean over the whole history ≥ 15% APR and positive ≥ 75% of hours.
         structural = sorted(
             (c for c in cs if c["stats"]["mean_all"] * 8760 >= 0.15 and c["stats"]["pos_all"] >= 0.75),
             key=lambda c: c["stats"]["mean_all"], reverse=True,
@@ -46,9 +46,9 @@ def summarize(result: dict, universe: Counter) -> list[dict]:
 
 def render(rows: list[dict], result: dict) -> str:
     p = result["params"]
-    lines = [f"venue · orizzonte {p['horizon_h']:.0f}h · ${p['notional_usd']:.0f}/gamba · "
-             f"top3 = somma netto delle 3 migliori coppie valide (si possono tenere in parallelo)",
-             f"struct = coppie con APR medio ≥15% e positive ≥75% delle ore su tutto lo storico ({p['history_days']}g)",
+    lines = [f"venues · horizon {p['horizon_h']:.0f}h · ${p['notional_usd']:.0f}/leg · "
+             f"top3 = summed net of the 3 best valid pairs (they can be held in parallel)",
+             f"struct = pairs with mean APR ≥15% and positive ≥75% of hours over the whole history ({p['history_days']}d)",
              f"{'venues':<22} {'univ':>5} {'hist':>5} {'struct':>6} {'sAPR3':>6} {'deep':>5} {'valid':>5} "
              f"{'top3':>7} {'top3$':>7} {'costMed':>7}  best"]
     for r in rows:
