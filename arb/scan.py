@@ -22,7 +22,8 @@ from .store import basis_mean, now_iso, save_prices
 
 WORKERS = 6
 BLOCKING_FLAGS = ("costs not covered", "thin book", "negative 24h mean spread",
-                  "unstable", "cost analysis failed")
+                  "unstable", "cost analysis failed", "high price impact")
+DEFAULT_MAX_IMPACT_BPS = 25
 
 
 @dataclass
@@ -186,7 +187,7 @@ def _base_candidate(s: dict, series: list[float], cfg: dict, p: ScanParams) -> d
         "apr_now": float(s["netApr"]),
         "volume_24h": s.get("volume24h"),
         "stats": stats.as_dict(),
-        "costs": {"fees_rt": fees_rt, "slippage_rt": None, "basis_entry": None},
+        "costs": {"fees_rt": fees_rt, "slippage_rt": None, "basis_entry": None, "basis_at_size": None},
         "eval": ev.as_dict(),
         "_stats": stats,
     }
@@ -195,11 +196,14 @@ def _base_candidate(s: dict, series: list[float], cfg: dict, p: ScanParams) -> d
 def _deepen(client: VooiClient, c: dict, cfg: dict, p: ScanParams, markets: dict,
             basis_hist: tuple[float | None, int]) -> dict:
     stats = c.get("_stats") or SpreadStats(**c["stats"])
+    max_impact = float(cfg.get("execution", {}).get("max_impact_bps", DEFAULT_MAX_IMPACT_BPS))
     fees = []
-    for role, side in (("long", "buy"), ("short", "sell")):
+    # Entry side (long buys, short sells) and exit side (long sells, short buys), both at the notional.
+    for role, side, exit_side in (("long", "buy", "sell"), ("short", "sell", "buy")):
         leg = c[role]
         m = markets.get((leg["exchange"], leg["symbol"], leg["quote"]), {})
         slip = fetch_slippage(client, leg["exchange"], leg["symbol"], p.notional_usd, side, leg["quote"])
+        exit_slip = fetch_slippage(client, leg["exchange"], leg["symbol"], p.notional_usd, exit_side, leg["quote"])
         q = fetch_quote(client, leg["exchange"], leg["symbol"], leg["quote"], p.notional_usd, side)
         fee = float(q["feesBps"]) / 1e4 if q and q.get("feesBps") is not None else taker_fee(cfg, leg["exchange"])
         fees.append(fee)
@@ -214,23 +218,29 @@ def _deepen(client: VooiClient, c: dict, cfg: dict, p: ScanParams, markets: dict
             "category": m.get("category"),
             "session": (m.get("schedule") or {}).get("session"),
             "slippage_bps": slip.get("slippageBps") if slip else None,
+            "entry_avg_price": slip.get("avgPrice") if slip else None,
+            "exit_slippage_bps": exit_slip.get("slippageBps") if exit_slip else None,
             "filled_pct": slip.get("filledPercent") if slip else None,
         })
 
-    slips = [c[r]["slippage_bps"] for r in ("long", "short")]
-    slippage_rt = 2 * sum(x for x in slips if x is not None) / 1e4
+    # Entry and exit impact of both legs: each round trip pays both sides of both legs.
+    impacts = [c[r][k] for r in ("long", "short") for k in ("slippage_bps", "exit_slippage_bps")]
+    slippage_rt = sum(x for x in impacts if x is not None) / 1e4
     lp, sp = c["long"]["price"], c["short"]["price"]
     basis = (sp - lp) / ((sp + lp) / 2) if lp and sp else None
+    la, sa = c["long"]["entry_avg_price"], c["short"]["entry_avg_price"]
+    basis_at_size = (sa - la) / ((sa + la) / 2) if la and sa else None
     fees_rt = 2 * sum(fees)
     cost_rt = fees_rt + slippage_rt
     b_mean, b_points = basis_hist
     c["costs"].update({"fees_rt": fees_rt, "slippage_rt": slippage_rt, "basis_entry": basis,
+                       "basis_at_size": basis_at_size,
                        "basis_mean": b_mean, "basis_points": b_points, "total_rt": cost_rt})
     c["notional_usd"] = p.notional_usd
     c["eval"] = evaluate(stats, p.horizon_h, cost_rt, basis, b_mean).as_dict()
     c["roi_on_margin"] = _roi_on_margin(c)
     c["apr_on_capital"] = apr_on_capital(c["eval"]["net_blend"], p.horizon_h, strategy_leverage(cfg))
-    c["flags"] = _flags(c, p)
+    c["flags"] = _flags(c, p, max_impact)
     target = cfg.get("strategy", {}).get("min_apr_on_capital")
     if target is not None and c["apr_on_capital"] < target:
         c["flags"].append(f"below target: {c['apr_on_capital']:.0%} on capital (min {target:.0%})")
@@ -268,7 +278,7 @@ def _roi_on_margin(c: dict) -> dict:
     return {"leverage": lev, "net_blend_on_margin": c["eval"]["net_blend"] * lev / 2}
 
 
-def _flags(c: dict, p: ScanParams) -> list[str]:
+def _flags(c: dict, p: ScanParams, max_impact_bps: float = DEFAULT_MAX_IMPACT_BPS) -> list[str]:
     st, ev, flags = c["stats"], c["eval"], []
     if st["n_hours"] < 72:
         flags.append(f"short history ({st['n_hours']}h)")
@@ -290,8 +300,14 @@ def _flags(c: dict, p: ScanParams) -> list[str]:
             flags.append(f"low OI on {leg['exchange']} (${leg['open_interest']:,.0f})")
         if leg.get("slippage_bps") is None:
             flags.append(f"slippage not estimated on {leg['exchange']}")
-        elif leg["slippage_bps"] > 15:
-            flags.append(f"high slippage on {leg['exchange']} ({leg['slippage_bps']:.1f} bps)")
+        if leg.get("exit_slippage_bps") is None:
+            flags.append(f"exit impact not estimated on {leg['exchange']}")
+        impacts = [(leg[k], side) for k, side in (("slippage_bps", "entry"), ("exit_slippage_bps", "exit"))
+                   if leg.get(k) is not None]
+        if impacts:
+            worst, side = max(impacts, key=lambda x: x[0])
+            if worst > max_impact_bps:
+                flags.append(f"high price impact on {leg['exchange']} ({worst:.0f} bps {side})")
         if leg.get("filled_pct") is not None and leg["filled_pct"] < 100:
             flags.append(f"thin book on {leg['exchange']} ({leg['filled_pct']:.0f}% filled)")
         interval, mins = leg.get("funding_interval_h"), leg.get("next_funding_min")
@@ -304,6 +320,9 @@ def _flags(c: dict, p: ScanParams) -> list[str]:
     basis = c["costs"].get("basis_entry")
     if basis is not None and basis < -0.002:
         flags.append(f"unfavorable entry basis ({basis:.2%})")
+    basis_size = c["costs"].get("basis_at_size")
+    if basis_size is not None and basis_size < -0.002:
+        flags.append(f"unfavorable basis at size ({basis_size:.2%})")
     return flags
 
 

@@ -111,3 +111,12 @@ def check_capital(client: VooiClient, cfg: dict, exchanges: list[str], notional:
     for ex in exchanges:
         needs[ex] = needs.get(ex, 0) + notional / leverage
     return plan_capital(fetch_balances(client), needs, buffer)
+
+
+def balance_capital(balances: dict[str, dict], venues: list[str]) -> tuple[float, str]:
+    """Capital for the portfolio simulation: the equity on the configured venues (all venues if none
+    of them has a balance). Returns (USD, where it comes from)."""
+    chosen = [v for v in venues if v in balances] or list(balances)
+    capital = sum(balances[v]["equity"] for v in chosen)
+    where = ", ".join(sorted(chosen)) if chosen else "no venue"
+    return capital, f"balances ({where})"

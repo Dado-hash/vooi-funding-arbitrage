@@ -34,7 +34,7 @@ This is the procedure for one run of the VOOI funding-arbitrage monitoring loop.
    - `[WARNING] consider rotation`: propose the rotation only if the expected net gain exceeds the hold by `rotate_min_uplift`, net of exit and new-entry costs. Close first; open in the next cycle.
 
 4. **New openings**: only if fewer than `max_strategies` strategies are open.
-   - `uv run arb portfolio --capital 1000 --leverage 2 --max-k 2 --json`, then choose from the valid candidates.
+   - `uv run arb portfolio --leverage 2 --max-k 2 --json`, then choose from the valid candidates. Capital defaults to the equity on the venues (`get_accounts`).
    - Requirements, all necessary:
      - no blocking flag, current spread > 0, market not HIP-3;
      - net return on capital (`apr_on_capital`, leverage included) ≥ `min_apr_on_capital` (20%) at the notional `notional_per_strategy`. Pairs below the threshold carry the flag `below target` and `arb portfolio` already excludes them;

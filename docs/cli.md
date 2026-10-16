@@ -10,7 +10,7 @@ Every `arb` command and `config.toml` option. Back to the [README](../README.md)
 | `arb scan --dex --notional 500` | Same scan on all on-chain venues, with parameter overrides |
 | `arb pair CHIP:aster CHIP:hyperliquid` | Full analysis of one pair (`SYM:exchange` long, then short) |
 | `arb venues --dex --days 30` | Compares venue combinations: universe, structural spreads, best 3 valid pairs net of costs |
-| `arb portfolio --capital 1000 --leverage 2 --max-k 5` | Splits capital across venues, simulates 1 to K strategies, $ return and liquidation distance |
+| `arb portfolio [--capital N] --leverage 2 --max-k 5` | Splits capital across venues, simulates 1 to K strategies, $ return and liquidation distance. Without `--capital`, uses the equity on the configured venues (`get_accounts`) |
 | `arb plan MET:hyperliquid MET:lighter --notional 450 [--send]` | Order plan to run by hand: same size on both legs, thinnest book first. `--send` posts it to Telegram |
 
 Flags for `scan` and `venues`: `--venues a,b`, `--dex`, `--all-venues`, `--assets`, `--days`, `--horizon`, `--notional`, `--min-hist-apr`, `--deep`, `--json`.
@@ -50,9 +50,9 @@ Secrets and the trading mode live in `.env` (see [`.env.example`](../.env.exampl
 
 | Section | Options |
 |---|---|
-| `[scan]` | `venues`, `both_legs`, `notional_usd`, `horizon_h`, `min_hist_apr`, `min_volume_usd`, `min_oi_usd`, `deep`, `history_days` |
+| `[scan]` | `venues`, `both_legs`, `notional_usd` (keep equal to `[strategy].notional_per_strategy`: costs are estimated at this size), `horizon_h`, `min_hist_apr`, `min_volume_usd`, `min_oi_usd`, `deep`, `history_days` |
 | `[venues]` | `dex`: on-chain venues used by `--dex` |
 | `[fees.taker]` | Estimated taker fee per venue (stage 2 only; stage 4 reads real fees from `get_quotes`) |
-| `[execution]` | Limits for `arb execute`, applied whatever a proposal contains: `venues`, `max_notional_per_leg`, `max_leverage`, `max_price_drift`, `max_basis_worsening`, `proposal_ttl_min`, `tp_sl`, `tp_sl_liq_fraction` |
+| `[execution]` | Limits for `arb execute`, applied whatever a proposal contains: `venues`, `max_notional_per_leg`, `max_leverage`, `max_price_drift`, `max_basis_worsening`, `max_impact_bps` (max price impact per side, in bps, for the scan flag and the pre-trade check; closes are never blocked), `proposal_ttl_min`, `tp_sl`, `tp_sl_liq_fraction` |
 | `[strategy]` | Rules for opening new strategies in the cycle: `max_strategies`, `notional_per_strategy`, `leverage`, `min_apr_on_capital`, `max_breakeven_h`, `capital_buffer`. The defaults fit about $120 of capital: one strategy, $100 per leg |
 | `[monitor]` | Position alarms and rotation: `min_liq_distance`, `max_imbalance`, `exit_lookahead_h`, `rotate_min_uplift` |

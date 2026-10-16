@@ -21,6 +21,7 @@ from .config import trading_mode
 from .monitor import _asset_key, fetch_positions
 from .plan import _market
 from .protection import check_against_liq
+from .scan import fetch_slippage
 from .store import journal_open, now_iso
 
 
@@ -36,6 +37,7 @@ def _limits(cfg: dict) -> dict:
         "max_leverage": float(e.get("max_leverage", 0)),
         "max_price_drift": float(e.get("max_price_drift", 0.01)),
         "max_basis_worsening": float(e.get("max_basis_worsening", 0.002)),
+        "max_impact_bps": float(e.get("max_impact_bps", 25)),
     }
 
 
@@ -77,6 +79,11 @@ def check(client: VooiClient, cfg: dict, p: dict) -> list[str]:
         if not o["reduceOnly"] and notional > lim["max_notional_per_leg"] * 1.02:
             problems.append(f"notional ${notional:,.0f} over the limit ${lim['max_notional_per_leg']:,.0f}")
         o["_market"] = m
+        # Executable price at the order's size. Only openings are blocked: a close may be urgent.
+        o["_impact"] = fetch_slippage(client, o["exchange"], o["asset"], float(o["size"]) * price, o["side"],
+                                      o.get("quote")) or {}
+        if not o["reduceOnly"]:
+            problems += _impact_problems(o, lim["max_impact_bps"])
     if p["kind"] == "open":
         from .capital import fetch_balances, plan_capital
 
@@ -97,7 +104,30 @@ def check(client: VooiClient, cfg: dict, p: dict) -> list[str]:
         basis = (sp - lp) / ((sp + lp) / 2)
         if basis < pay["ref_basis"] - lim["max_basis_worsening"]:
             problems.append(f"basis worsened: {basis * 1e4:+.1f} bps against {pay['ref_basis'] * 1e4:+.1f}")
+        ref_size = pay.get("ref_basis_at_size")
+        by_side = {o["side"]: o["_impact"] for o in pay["orders"]}
+        la, sa = by_side["buy"].get("avgPrice"), by_side["sell"].get("avgPrice")
+        if ref_size is not None and la and sa:
+            exec_basis = (sa - la) / ((sa + la) / 2)
+            if exec_basis < ref_size - lim["max_basis_worsening"]:
+                problems.append(f"price impact worsened the basis at size: {exec_basis * 1e4:+.1f} bps "
+                                f"against {ref_size * 1e4:+.1f} at the proposal")
     return problems
+
+
+def _impact_problems(o: dict, limit: float) -> list[str]:
+    """Problems with the price impact of one opening order at its size."""
+    est, ex = o["_impact"], o["exchange"]
+    bps = est.get("slippageBps")
+    if bps is None:
+        return [f"price impact not estimated on {ex}"]
+    out = []
+    filled = est.get("filledPercent")
+    if filled is not None and float(filled) < 100:
+        out.append(f"price impact: only {float(filled):.0f}% of {o['asset']} fills on {ex} at this size")
+    if float(bps) > limit:
+        out.append(f"price impact {float(bps):.1f} bps on {ex} over the limit {limit:.0f}")
+    return out
 
 
 def _ensure_leverage(client: VooiClient, exchange: str, asset: str, leverage: float, log: list) -> None:

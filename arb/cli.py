@@ -62,10 +62,18 @@ def cmd_venues(args, cfg, client) -> None:
 
 
 def cmd_portfolio(args, cfg, client) -> None:
+    from .capital import balance_capital, fetch_balances
     from .portfolio import render, simulate
 
     p = _params(args, cfg)
-    sim = simulate(client, cfg, store.connect(), p, args.capital, args.leverage, args.max_k, args.utilization)
+    capital, source = args.capital, "--capital"
+    if capital is None:
+        # Default: the equity actually held on the configured venues (or on all of them if none is set).
+        capital, source = balance_capital(fetch_balances(client), p.venues)
+        if not capital:
+            sys.exit("no balances found on the venues: pass --capital")
+    sim = simulate(client, cfg, store.connect(), p, capital, args.leverage, args.max_k, args.utilization)
+    sim["params"]["capital_source"] = source
     _dump(sim) if args.json else print(render(sim))
 
 
@@ -124,7 +132,7 @@ def cmd_propose(args, cfg, client) -> None:
         ex = cfg.get("execution", {})
         frac = ex.get("tp_sl_liq_fraction", 0.7) if ex.get("tp_sl", True) else None
         p = approvals.propose_open(client, conn, args.long, args.short, notional, args.leverage, args.reason, ttl,
-                                   tp_sl_fraction=frac)
+                                   tp_sl_fraction=frac, max_impact_bps=cfg.get("execution", {}).get("max_impact_bps"))
     else:
         p = approvals.propose_close(client, conn, args.long, args.short, args.reason, ttl)
     from html import escape
@@ -314,7 +322,8 @@ def main() -> None:
 
     po = sub.add_parser("portfolio", help="simulate 1..K strategies in parallel on a given capital")
     _scan_args(po)
-    po.add_argument("--capital", type=float, default=1000, help="total capital, split equally among the venues")
+    po.add_argument("--capital", type=float, default=None,
+                    help="total capital, split equally among the venues (default: equity from get_accounts)")
     po.add_argument("--leverage", type=float, default=2)
     po.add_argument("--max-k", type=int, default=5, help="maximum number of strategies in parallel")
     po.add_argument("--utilization", type=float, default=0.9, help="share of margin committed (buffer for fees and P&L)")

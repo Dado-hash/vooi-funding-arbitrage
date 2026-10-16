@@ -3,7 +3,7 @@
 [scan]
 venues = ["hyperliquid", "lighter"] # [] = all venues. Chosen with `arb venues` on 2026-10-15
 both_legs = true                    # both legs must be in `venues` (as in the VOOI UI)
-notional_usd = 1000                 # notional per leg: $500 margin per venue × 2x leverage
+notional_usd = 100                  # keep equal to [strategy].notional_per_strategy: costs are estimated at this size
 horizon_h = 168                     # holding horizon (7 days): with taker fees, 72h is not enough to cover costs
 min_hist_apr = 0.05                 # minimum 7d mean APR to make the ranking (0.05 = 5%)
 min_volume_usd = 100000             # minimum 24h volume of the strategy (sum of legs)
@@ -37,6 +37,7 @@ max_notional_per_leg = 1000        # USD
 max_leverage = 2
 max_price_drift = 0.01             # maximum price move from the proposal's reference price
 max_basis_worsening = 0.002        # maximum basis worsening (20 bps) before re-proposing
+max_impact_bps = 25                # max price impact per side (bps) for the scan flag and the pre-trade check
 proposal_ttl_min = 15              # proposal validity: after that, the approval no longer counts
 tp_sl = true                       # TP/SL on the opening orders (and in the notify instructions)
 tp_sl_liq_fraction = 0.7           # levels at 70% of the estimated (isolated) liquidation distance
