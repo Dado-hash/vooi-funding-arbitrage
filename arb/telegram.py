@@ -1,4 +1,4 @@
-"""Telegram: notifiche e approvazione delle proposte con pulsanti. Nessun comando testuale viene interpretato."""
+"""Telegram: notifications and proposal approval via buttons. No text commands are interpreted."""
 
 import html
 import os
@@ -10,7 +10,7 @@ import httpx
 from .config import load_dotenv
 
 API = "https://api.telegram.org/bot{token}/{method}"
-MAX_LEN = 4000  # limite Telegram: 4096 caratteri per messaggio
+MAX_LEN = 4000  # Telegram limit: 4096 characters per message
 
 
 class TelegramError(RuntimeError):
@@ -21,7 +21,7 @@ def _call(method: str, **params):
     load_dotenv()
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise TelegramError("TELEGRAM_BOT_TOKEN mancante in .env (vedi README)")
+        raise TelegramError("TELEGRAM_BOT_TOKEN missing in .env (see README)")
     r = httpx.post(API.format(token=token, method=method), json=params, timeout=20 + int(params.get("timeout", 0)))
     data = r.json()
     if not data.get("ok"):
@@ -45,18 +45,18 @@ def chunks(text: str, size: int = MAX_LEN) -> list[str]:
 
 
 def plain(text: str) -> str:
-    """HTML Telegram → testo semplice (per il terminale)."""
+    """Telegram HTML → plain text (for the terminal)."""
     return html.unescape(re.sub(r"<[^>]+>", "", text))
 
 
 def send(text: str, as_html: bool = False) -> int:
-    """Invia `text` alla chat configurata (testo semplice, o HTML Telegram con `as_html`).
-    Restituisce il numero di messaggi."""
+    """Send `text` to the configured chat (plain text, or Telegram HTML with `as_html`).
+    Returns the number of messages."""
     load_dotenv()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not chat_id:
-        raise TelegramError("TELEGRAM_CHAT_ID mancante in .env: esegui `arb tg chat-id`")
-    if as_html and len(text) > MAX_LEN:  # spezzare l'HTML romperebbe i tag
+        raise TelegramError("TELEGRAM_CHAT_ID missing in .env: run `arb tg chat-id`")
+    if as_html and len(text) > MAX_LEN:  # splitting HTML would break the tags
         text, as_html = plain(text), False
     parts = chunks(text)
     for part in parts:
@@ -66,7 +66,7 @@ def send(text: str, as_html: bool = False) -> int:
 
 
 def chat_ids() -> list[dict]:
-    """Chat che hanno scritto al bot di recente: serve a ricavare TELEGRAM_CHAT_ID."""
+    """Chats that recently wrote to the bot: used to find TELEGRAM_CHAT_ID."""
     seen = {}
     for u in _call("getUpdates"):
         chat = (u.get("message") or u.get("edited_message") or {}).get("chat")
@@ -75,24 +75,24 @@ def chat_ids() -> list[dict]:
     return list(seen.values())
 
 
-# --- approvazioni: solo pulsanti, mai comandi testuali ---
+# --- approvals: buttons only, never text commands ---
 
 def _allowed_user() -> int:
     load_dotenv()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not chat_id:
-        raise TelegramError("TELEGRAM_CHAT_ID mancante in .env: esegui `arb tg chat-id`")
+        raise TelegramError("TELEGRAM_CHAT_ID missing in .env: run `arb tg chat-id`")
     return int(chat_id)
 
 
 def send_proposal(p: dict) -> int:
-    """Invia la proposta con i pulsanti Approva/Rifiuta. Restituisce il message_id."""
+    """Send the proposal with Approve/Reject buttons. Returns the message_id."""
     from .approvals import local_hm
 
-    text = f"<i>Proposta #{p['id']} · scade alle {local_hm(p['expires_ts'])}</i>\n\n{p['summary']}"
+    text = f"<i>Proposal #{p['id']} · expires at {local_hm(p['expires_ts'])}</i>\n\n{p['summary']}"
     keyboard = {"inline_keyboard": [[
-        {"text": "✅ Approva", "callback_data": f"a:{p['id']}"},
-        {"text": "❌ Rifiuta", "callback_data": f"r:{p['id']}"},
+        {"text": "✅ Approve", "callback_data": f"a:{p['id']}"},
+        {"text": "❌ Reject", "callback_data": f"r:{p['id']}"},
     ]]}
     msg = _call("sendMessage", chat_id=_allowed_user(), text=text, reply_markup=keyboard,
                 disable_web_page_preview=True, parse_mode="HTML")
@@ -110,9 +110,9 @@ def _save_offset(conn, offset: int) -> None:
 
 
 def poll(conn, timeout: int = 0) -> list[dict]:
-    """Legge i tap sui pulsanti e aggiorna le proposte. Ignora tutto il resto (testo compreso).
+    """Reads the button taps and updates the proposals. Ignores everything else (text included).
 
-    Restituisce le decisioni registrate: [{"id", "decision"}].
+    Returns the recorded decisions: [{"id", "decision"}].
     """
     from . import approvals
 
@@ -125,27 +125,27 @@ def poll(conn, timeout: int = 0) -> list[dict]:
         if not cq:
             continue
         if cq["from"]["id"] != allowed:
-            _call("answerCallbackQuery", callback_query_id=cq["id"], text="Non autorizzato")
+            _call("answerCallbackQuery", callback_query_id=cq["id"], text="Not authorized")
             continue
         action, _, pid = (cq.get("data") or "").partition(":")
         p = approvals.get(conn, pid)
         if not p or action not in ("a", "r"):
-            _call("answerCallbackQuery", callback_query_id=cq["id"], text="Proposta sconosciuta")
+            _call("answerCallbackQuery", callback_query_id=cq["id"], text="Unknown proposal")
             continue
         if p["status"] != "pending":
-            note = f"Già {p['status']}"
+            note = f"Already {p['status']}"
         elif approvals.is_expired(p):
             approvals.set_status(conn, pid, "expired")
-            note = "Scaduta: non verrà eseguita"
+            note = "Expired: it will not run"
         else:
             status = "approved" if action == "a" else "rejected"
             approvals.set_status(conn, pid, status, decided_ts=datetime.now(timezone.utc).isoformat(timespec="seconds"))
             decisions.append({"id": pid, "decision": status})
-            note = "Approvata: eseguo a breve" if status == "approved" else "Rifiutata"
+            note = "Approved: executing shortly" if status == "approved" else "Rejected"
         _call("answerCallbackQuery", callback_query_id=cq["id"], text=note)
         msg = cq.get("message")
         if msg:
-            # `entities` conserva la formattazione: il testo aggiunto in coda non sposta gli offset.
+            # `entities` keeps the formatting: the text appended at the end does not shift the offsets.
             _call("editMessageText", chat_id=msg["chat"]["id"], message_id=msg["message_id"],
                   text=f"{msg.get('text', '')}\n\n→ {note}", disable_web_page_preview=True,
                   **({"entities": msg["entities"]} if msg.get("entities") else {}))
@@ -153,7 +153,7 @@ def poll(conn, timeout: int = 0) -> list[dict]:
 
 
 def wait_decision(conn, pid: str, timeout_s: int) -> str:
-    """Long polling finché la proposta `pid` non è decisa o scade. Restituisce lo stato finale."""
+    """Long polling until proposal `pid` is decided or expires. Returns the final status."""
     import time
 
     from . import approvals

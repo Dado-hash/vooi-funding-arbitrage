@@ -1,11 +1,11 @@
-"""Funnel di selezione delle strategie.
+"""Strategy selection funnel.
 
-1. Universo: `get_funding_strategies` (tutte le coppie, non solo quelle con APR attuale alto),
-   filtrate per venue e volume.
-2. Storico: funding orario per singolo mercato (`get_funding_rate_history`, cache SQLite). Lo spread di
-   ogni coppia si calcola in locale, quindi la durata si valuta su TUTTO l'universo.
-3. Sulle migliori `deep`: OI e prezzi (`get_markets`, una volta per venue) e `estimate_slippage`
-   per i costi reali.
+1. Universe: `get_funding_strategies` (every pair, not only those with a high current APR),
+   filtered by venue and volume.
+2. History: hourly funding per market (`get_funding_rate_history`, SQLite cache). Each pair's spread
+   is computed locally, so persistence is evaluated over the WHOLE universe.
+3. For the best `deep` pairs: OI and prices (`get_markets`, once per venue) and `estimate_slippage`
+   for real costs.
 """
 
 import re
@@ -21,8 +21,8 @@ from .metrics import HOURS_PER_YEAR, SpreadStats, evaluate, spread_stats
 from .store import basis_mean, now_iso, save_prices
 
 WORKERS = 6
-BLOCKING_FLAGS = ("costi non coperti", "book insufficiente", "spread medio 24h negativo",
-                  "instabile", "analisi costi fallita")
+BLOCKING_FLAGS = ("costs not covered", "thin book", "negative 24h mean spread",
+                  "unstable", "cost analysis failed")
 
 
 @dataclass
@@ -63,7 +63,7 @@ def venue_pair(c: dict) -> str:
 
 
 def is_viable(c: dict) -> bool:
-    """Netto atteso positivo e nessun flag bloccante (vedi BLOCKING_FLAGS)."""
+    """Positive expected net return and no blocking flag (see BLOCKING_FLAGS)."""
     flags = c.get("flags", [])
     return c["eval"]["net_blend"] > 0 and not any(b in f for f in flags for b in BLOCKING_FLAGS)
 
@@ -93,13 +93,13 @@ def fetch_markets_index(client: VooiClient, venues: list[str]) -> dict[tuple, di
     return {leg_key(m): m for m in items}
 
 
-# --- grafico spread per coppia (usato da monitor e per i controlli puntuali) ---
+# --- per-pair spread chart (used by the monitor and for spot checks) ---
 
 _AMBIGUOUS = re.compile(r'Ambiguous asset "([^"]+)" on (\w+)')
 
 
 def _disambiguate(err: MCPError, legs: list[dict]) -> bool:
-    """Su "Ambiguous asset" (es. Aster XAG/USDT e XAG/USD1) passa la coppia completa `XAGUSDT`."""
+    """On "Ambiguous asset" (e.g. Aster XAG/USDT and XAG/USD1) pass the full pair `XAGUSDT`."""
     m = _AMBIGUOUS.search(str(err))
     if not m:
         return False
@@ -112,7 +112,7 @@ def _disambiguate(err: MCPError, legs: list[dict]) -> bool:
 
 
 def spread_chart(client: VooiClient, long: dict, short: dict, days: int) -> list[float]:
-    """`long`/`short`: {"asset", "exchange", "quote"?}. Restituisce lo spread orario, dal più vecchio."""
+    """`long`/`short`: {"asset", "exchange", "quote"?}. Returns the hourly spread, oldest first."""
     legs = [dict(long), dict(short)]
     today = datetime.now(timezone.utc).date()
     for _ in range(3):
@@ -128,7 +128,7 @@ def spread_chart(client: VooiClient, long: dict, short: dict, days: int) -> list
             if not _disambiguate(e, legs):
                 raise
     else:
-        raise MCPError("asset ambiguo non risolto")
+        raise MCPError("ambiguous asset not resolved")
     points = sorted(points or [], key=lambda x: x["date"])
     return [float(x["spread"]) for x in points]
 
@@ -149,7 +149,7 @@ def fetch_slippage(client: VooiClient, exchange: str, symbol: str, notional: flo
 
 def fetch_quote(client: VooiClient, exchange: str, symbol: str, quote: str, notional: float,
                 side: str) -> dict | None:
-    """`get_quotes` per un mercato: fee reali (feesBps, fee VOOI incluse) e slippage."""
+    """`get_quotes` for one market: real fees (feesBps, VOOI fees included) and slippage."""
     try:
         res = client.call("get_quotes", {
             "asset": symbol, "exchanges": [exchange], "quoteSize": str(notional), "side": side, "leverage": "1",
@@ -233,13 +233,13 @@ def _deepen(client: VooiClient, c: dict, cfg: dict, p: ScanParams, markets: dict
     c["flags"] = _flags(c, p)
     target = cfg.get("strategy", {}).get("min_apr_on_capital")
     if target is not None and c["apr_on_capital"] < target:
-        c["flags"].append(f"sotto obiettivo: {c['apr_on_capital']:.0%} sul capitale (min {target:.0%})")
+        c["flags"].append(f"below target: {c['apr_on_capital']:.0%} on capital (min {target:.0%})")
     c["deep"] = True
     return c
 
 
 def deepen_many(client: VooiClient, cfg: dict, p: ScanParams, conn, cands: list[dict], markets: dict) -> None:
-    """Stadio 3 in parallelo. Il basis storico si legge prima, nel thread principale (SQLite)."""
+    """Stage 3 in parallel. Historical basis is read first, on the main thread (SQLite)."""
     hist = {
         c["id"]: basis_mean(conn, (c["long"]["exchange"], c["long"]["symbol"], c["long"]["quote"]),
                             (c["short"]["exchange"], c["short"]["symbol"], c["short"]["quote"]))
@@ -249,7 +249,7 @@ def deepen_many(client: VooiClient, cfg: dict, p: ScanParams, conn, cands: list[
         outcomes = list(ex.map(lambda c: _safe(_deepen, client, c, cfg, p, markets, hist[c["id"]]), cands))
     for c, out in zip(cands, outcomes):
         if isinstance(out, Exception):
-            c["flags"] = [f"analisi costi fallita: {out}"]
+            c["flags"] = [f"cost analysis failed: {out}"]
 
 
 def strategy_leverage(cfg: dict) -> float:
@@ -257,13 +257,13 @@ def strategy_leverage(cfg: dict) -> float:
 
 
 def apr_on_capital(net_return: float, horizon_h: float, leverage: float) -> float:
-    """Netto annualizzato sul capitale impegnato. Margine totale = 2 gambe × notional / leva,
-    quindi rendimento sul capitale = netto per gamba × leva / 2. A 2x coincide con il netto per gamba."""
+    """Annualized net return on committed capital. Total margin = 2 legs × notional / leverage,
+    so return on capital = net per leg × leverage / 2. At 2x it equals the net per leg."""
     return net_return * leverage / 2 * HOURS_PER_YEAR / horizon_h
 
 
 def _roi_on_margin(c: dict) -> dict:
-    """Rendimento netto sul margine totale (2 gambe) alla leva massima comune."""
+    """Net return on total margin (2 legs) at the highest leverage both legs allow."""
     lev = min(c["long"]["max_leverage"], c["short"]["max_leverage"])
     return {"leverage": lev, "net_blend_on_margin": c["eval"]["net_blend"] * lev / 2}
 
@@ -271,44 +271,44 @@ def _roi_on_margin(c: dict) -> dict:
 def _flags(c: dict, p: ScanParams) -> list[str]:
     st, ev, flags = c["stats"], c["eval"], []
     if st["n_hours"] < 72:
-        flags.append(f"storico corto ({st['n_hours']}h)")
+        flags.append(f"short history ({st['n_hours']}h)")
     if st["now"] < 0:
-        flags.append("spread attuale negativo: entrando ora si paga")
+        flags.append("negative current spread: entering now pays funding")
     if st["mean_24h"] < 0:
-        flags.append("spread medio 24h negativo")
+        flags.append("negative 24h mean spread")
     if st["pos_72h"] < 0.6:
-        flags.append(f"instabile: positivo {st['pos_72h']:.0%} delle ore 72h")
+        flags.append(f"unstable: positive {st['pos_72h']:.0%} of hours over 72h")
     if st["n_hours"] >= 14 * 24 and st["pos_all"] < 0.5:
-        flags.append(f"regime recente: positivo solo {st['pos_all']:.0%} delle ore su {st['n_hours'] // 24}g")
+        flags.append(f"recent regime: positive only {st['pos_all']:.0%} of hours over {st['n_hours'] // 24}d")
     if st["mean_7d"] > 0 and st["now"] > 3 * st["mean_7d"]:
-        flags.append("picco: spread attuale >3x media 7d")
+        flags.append("spike: current spread >3x the 7d mean")
     if ev["breakeven_h"] is None or ev["breakeven_h"] > p.horizon_h:
-        flags.append("costi non coperti entro l'orizzonte")
+        flags.append("costs not covered within the horizon")
     for role in ("long", "short"):
         leg = c[role]
         if leg.get("open_interest") is not None and leg["open_interest"] < p.min_oi_usd:
-            flags.append(f"OI basso su {leg['exchange']} (${leg['open_interest']:,.0f})")
+            flags.append(f"low OI on {leg['exchange']} (${leg['open_interest']:,.0f})")
         if leg.get("slippage_bps") is None:
-            flags.append(f"slippage non stimato su {leg['exchange']}")
+            flags.append(f"slippage not estimated on {leg['exchange']}")
         elif leg["slippage_bps"] > 15:
-            flags.append(f"slippage alto su {leg['exchange']} ({leg['slippage_bps']:.1f} bps)")
+            flags.append(f"high slippage on {leg['exchange']} ({leg['slippage_bps']:.1f} bps)")
         if leg.get("filled_pct") is not None and leg["filled_pct"] < 100:
-            flags.append(f"book insufficiente su {leg['exchange']} ({leg['filled_pct']:.0f}%)")
+            flags.append(f"thin book on {leg['exchange']} ({leg['filled_pct']:.0f}% filled)")
         interval, mins = leg.get("funding_interval_h"), leg.get("next_funding_min")
         if interval and interval >= 4 and mins is not None and mins < 60:
-            flags.append(f"settlement {leg['exchange']} ({interval}h) tra {mins:.0f}m")
+            flags.append(f"settlement on {leg['exchange']} ({interval}h) in {mins:.0f}m")
         if leg.get("session") and leg["session"] != "24x7":
-            flags.append(f"orari limitati su {leg['exchange']} ({leg['session']}): rischio gap")
+            flags.append(f"limited hours on {leg['exchange']} ({leg['session']}): gap risk")
     if c["long"]["exchange"] == c["short"]["exchange"]:
-        flags.append("stessa venue, sottostanti diversi: rischio basis")
+        flags.append("same venue, different underlyings: basis risk")
     basis = c["costs"].get("basis_entry")
     if basis is not None and basis < -0.002:
-        flags.append(f"basis sfavorevole all'ingresso ({basis:.2%})")
+        flags.append(f"unfavorable entry basis ({basis:.2%})")
     return flags
 
 
 def top_per_venue_pair(k: int) -> Callable[[list[dict]], list[dict]]:
-    """Selettore per lo stadio 3: le migliori `k` coppie di ogni combinazione di venue."""
+    """Stage 3 selector: the best `k` pairs of each venue combination."""
     def select(candidates: list[dict]) -> list[dict]:
         seen: dict[str, int] = {}
         out = []
@@ -324,10 +324,10 @@ def top_per_venue_pair(k: int) -> Callable[[list[dict]], list[dict]]:
 def run_scan(client: VooiClient, cfg: dict, p: ScanParams, conn,
              strategies: list[dict] | None = None,
              select_deep: Callable[[list[dict]], list[dict]] | None = None) -> tuple[dict, list[dict]]:
-    """Restituisce (risultato, strategie grezze dello stadio 1).
+    """Returns (result, raw stage-1 strategies).
 
-    `strategies` salta lo stadio 1. `select_deep` sceglie le coppie per lo stadio 3
-    (default: le prime `p.deep` per score).
+    `strategies` skips stage 1. `select_deep` picks the pairs for stage 3
+    (default: the first `p.deep` by score).
     """
     if strategies is None:
         strategies = fetch_strategies(client, p)
@@ -343,7 +343,7 @@ def run_scan(client: VooiClient, cfg: dict, p: ScanParams, conn,
         l, sh = _legs(s)
         c = _base_candidate(s, pair_spread(series_of(leg_key(l)), series_of(leg_key(sh))), cfg, p)
         if c is None:
-            skipped.append({"id": pair_id(s), "reason": "storico assente o troppo corto"})
+            skipped.append({"id": pair_id(s), "reason": "history missing or too short"})
         elif c["stats"]["mean_7d"] * HOURS_PER_YEAR < p.min_hist_apr:
             below += 1
         else:
@@ -388,15 +388,15 @@ def fmt_pct(x: float | None, digits: int = 1) -> str:
 
 
 def render_table(result: dict, rows: list[dict] | None = None) -> str:
-    """Tabella compatta pensata per l'analisi (non per l'utente finale)."""
+    """Compact table meant for analysis (not for the end user)."""
     h = result["params"]["horizon_h"]
     hist = result.get("history", {})
     head = (f"{'#':>2} {'pair':<36} {'APRnow':>7} {'APR24h':>7} {'APR72h':>7} {'APR7d':>7} "
             f"{'pos72':>5} {'strk':>4} {'hl':>5} {'exp':>6} {'cost':>6} {'net':>6} {'score':>7} {'BE':>4}  flags")
-    lines = [f"scan {result['ts']} · {result['n_strategies']} strategie · {result['n_analyzed']} con APR7d ≥ "
-             f"{result['params']['min_hist_apr']:.0%} · storico {hist.get('legs')} mercati "
-             f"({hist.get('fetched')} scaricati, {hist.get('cached')} da cache, {len(hist.get('errors', {}))} errori) "
-             f"· orizzonte {h:.0f}h",
+    lines = [f"scan {result['ts']} · {result['n_strategies']} strategies · {result['n_analyzed']} with APR7d ≥ "
+             f"{result['params']['min_hist_apr']:.0%} · history {hist.get('legs')} markets "
+             f"({hist.get('fetched')} fetched, {hist.get('cached')} cached, {len(hist.get('errors', {}))} errors) "
+             f"· horizon {h:.0f}h",
              head]
     ann = lambda x: x * HOURS_PER_YEAR
     for i, c in enumerate(rows if rows is not None else result["top"], 1):

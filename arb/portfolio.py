@@ -1,8 +1,8 @@
-"""Simulazione di portafoglio: capitale diviso in parti uguali tra le venue, leva fissa,
-da 1 a K strategie in parallelo con lo stesso notional.
+"""Portfolio simulation: capital split equally across venues, fixed leverage,
+1 to K strategies in parallel with the same notional.
 
-Ogni strategia ha una gamba per venue. Con 2 venue e K strategie, su ogni venue ci sono K gambe
-che condividono il margine (cross margin).
+Each strategy has one leg per venue. With 2 venues and K strategies, each venue holds K legs
+that share margin (cross margin).
 """
 
 import copy
@@ -11,17 +11,17 @@ from dataclasses import replace
 from .metrics import HOURS_PER_YEAR
 from .scan import ScanParams, deepen_many, fetch_markets_index, is_viable, run_scan
 
-# Non bloccanti nello scan, ma esclusi dal portafoglio
-PORTFOLIO_EXCLUDE = ("spread attuale negativo", "stessa venue", "orari limitati", "sotto obiettivo")
+# Not blocking in the scan, but excluded from the portfolio
+PORTFOLIO_EXCLUDE = ("negative current spread", "same venue", "limited hours", "below target")
 
 
 def maintenance_rate(max_leverage: float) -> float:
-    """Margine di mantenimento = 1/(2 × leva massima): regola Hyperliquid, approssimazione per le altre venue."""
+    """Maintenance margin = 1/(2 × max leverage): the Hyperliquid rule, an approximation elsewhere."""
     return 1 / (2 * max_leverage)
 
 
 def isolated_liq_move(leverage: float, max_leverage: float) -> float:
-    """Movimento avverso del prezzo che liquida una gamba in isolated margin."""
+    """Adverse price move that liquidates one leg in isolated margin."""
     return 1 / leverage - maintenance_rate(max_leverage)
 
 
@@ -31,7 +31,7 @@ def _risk(chosen: list[dict], n: float, margin: float, leverage: float) -> dict:
         for role in ("long", "short"):
             by_exchange.setdefault(c[role]["exchange"], []).append(c[role])
     iso = min(isolated_liq_move(leverage, leg["max_leverage"]) for legs in by_exchange.values() for leg in legs)
-    # Cross margin: shock su un solo asset, le altre gambe della venue restano ferme.
+    # Cross margin: shock on a single asset, the venue's other legs stay still.
     cross = {
         ex: (margin - sum(maintenance_rate(l["max_leverage"]) * n for l in legs)) / n
         for ex, legs in by_exchange.items()
@@ -47,7 +47,7 @@ def simulate(client, cfg: dict, conn, p_base: ScanParams, capital: float, levera
     p = replace(p_base, notional_usd=leg_capacity)
 
     min_apr = cfg.get("strategy", {}).get("min_apr_on_capital")
-    # Costi stimati al notional massimo: è il caso K = 1.
+    # Costs estimated at the maximum notional: the K = 1 case.
     result, _ = run_scan(client, cfg, p, conn)
     pool = sorted(
         (c for c in result["top"]
@@ -101,11 +101,11 @@ def simulate(client, cfg: dict, conn, p_base: ScanParams, capital: float, levera
 def render(sim: dict) -> str:
     pr = sim["params"]
     lines = [
-        f"portafoglio ${pr['capital']:.0f} · ${pr['margin_per_venue']:.0f} per venue · leva {pr['leverage']:g}x · "
-        f"utilizzo {pr['utilization']:.0%} → max ${pr['leg_capacity']:.0f} di notional per venue · "
-        f"orizzonte {pr['horizon_h']:.0f}h",
-        f"candidate valide: {len(sim['pool'])}",
-        f"{'K':>2} {'$/gamba':>8} {'atteso$':>8} {'pessim$':>8} {'costi$':>7} {'netto$':>7} {'netPes$':>8} "
+        f"portfolio ${pr['capital']:.0f} · ${pr['margin_per_venue']:.0f} per venue · leverage {pr['leverage']:g}x · "
+        f"utilization {pr['utilization']:.0%}, max ${pr['leg_capacity']:.0f} notional per venue · "
+        f"horizon {pr['horizon_h']:.0f}h",
+        f"valid candidates: {len(sim['pool'])}",
+        f"{'K':>2} {'$/leg':>8} {'exp$':>8} {'pess$':>8} {'cost$':>7} {'net$':>7} {'netPess$':>8} "
         f"{'ROI':>6} {'APR':>6} {'liqIso':>7} {'shockX':>7}",
     ]
     for s in sim["scenarios"]:
@@ -116,12 +116,12 @@ def render(sim: dict) -> str:
         )
     if sim["scenarios"]:
         best = max(sim["scenarios"], key=lambda s: s["net_usd"])
-        lines.append(f"\nmigliore per netto atteso: K={best['k']}")
+        lines.append(f"\nbest by expected net: K={best['k']}")
         for st in best["strategies"]:
             b = st["basis_entry"]
             lines.append(
-                f"  {st['id']:<40} ${st['notional']:.0f}/gamba  atteso {st['exp_usd']:+.2f}  costi {st['cost_usd']:.2f}  "
-                f"netto {st['net_usd']:+.2f}  basis {b * 1e4 if b is not None else float('nan'):+.1f}bps  "
+                f"  {st['id']:<40} ${st['notional']:.0f}/leg  exp {st['exp_usd']:+.2f}  cost {st['cost_usd']:.2f}  "
+                f"net {st['net_usd']:+.2f}  basis {b * 1e4 if b is not None else float('nan'):+.1f}bps  "
                 f"BE {st['breakeven_h']}h  {'; '.join(st['flags'])}"
             )
     return "\n".join(lines)

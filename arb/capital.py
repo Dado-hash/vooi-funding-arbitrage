@@ -1,8 +1,8 @@
-"""Controllo del capitale prima di proporre un trade: margine disponibile per venue e spostamenti
-necessari. Gli spostamenti vengono solo SUGGERITI (l'utente li fa su VOOI): mai eseguiti.
+"""Capital check before proposing a trade: available margin per venue and the transfers needed.
+Transfers are only SUGGESTED (the user makes them on VOOI): never executed.
 
-Il formato di `get_accounts` va confermato con exchange collegati: `normalize_account` prova più
-nomi di campo e conserva il record grezzo.
+`normalize_account` tries several field names and keeps the raw record (format verified on
+Hyperliquid and Lighter, see tests/fixtures/accounts.json).
 """
 
 import math
@@ -13,7 +13,7 @@ AVAILABLE_KEYS = ("availableBalance", "availableMargin", "available", "withdrawa
                   "free", "availableToTrade")
 EQUITY_KEYS = ("equity", "totalEquity", "accountValue", "totalBalance", "balance", "total")
 USED_KEYS = ("marginInUse", "marginUsed", "usedMargin", "totalMarginUsed", "initialMargin")
-# Collaterale contato 1:1 in USD. Altri token (es. asset spot) vengono ignorati.
+# Collateral counted 1:1 in USD. Other tokens (e.g. spot assets) are ignored.
 STABLES = {"USDC", "USDT", "USDH", "USD", "USDE", "USD1", "USDT0"}
 
 
@@ -38,11 +38,11 @@ def normalize_account(a: dict) -> dict:
 
 
 def fetch_balances(client: VooiClient) -> dict[str, dict]:
-    """Saldi aggregati per venue: {exchange: {"equity", "available", "used", "accounts"}}."""
+    """Balances aggregated per venue: {exchange: {"equity", "available", "used", "accounts"}}."""
     res = client.call("get_accounts", {})
     items = res if isinstance(res, list) else (res.get("items") or res.get("accounts") or [])
     accounts = [normalize_account(a) for a in items]
-    # Hyperliquid: il saldo spot vale come margine perp solo con un abstraction mode unificato.
+    # Hyperliquid: spot balance counts as perp margin only with a unified abstraction mode.
     hl_spot_usable = True
     if any(a["exchange"] == "hyperliquid" and a["type"] == "spot" for a in accounts):
         mode = (client.call("get_account_info", {"exchange": "hyperliquid"}) or {}).get("abstractionMode")
@@ -66,8 +66,8 @@ def _ceil5(x: float) -> float:
 
 
 def plan_capital(balances: dict[str, dict], needs: dict[str, float], buffer: float) -> dict:
-    """`needs`: margine richiesto per venue (notional/leva). Applica `buffer` (fee + oscillazioni)
-    e calcola gli spostamenti tra venue. Restituisce {"ok", "venues", "moves", "missing", "lines"}."""
+    """`needs`: required margin per venue (notional/leverage). Applies `buffer` (fees + swings)
+    and works out transfers between venues. Returns {"ok", "venues", "moves", "missing", "lines"}."""
     venues = {}
     for ex, need in needs.items():
         required = need * (1 + buffer)
@@ -94,14 +94,14 @@ def plan_capital(balances: dict[str, dict], needs: dict[str, float], buffer: flo
             missing += short
 
     ok = all(v["delta"] >= 0 for v in venues.values())
-    lines = [f"CAPITALE (margine richiesto +{buffer:.0%} di buffer)"]
+    lines = [f"CAPITAL (required margin + {buffer:.0%} buffer)"]
     for ex, v in venues.items():
-        state = "non collegato" if not v["connected"] else ("ok" if v["delta"] >= 0 else f"mancano ${-v['delta']:,.2f}")
-        lines.append(f"- {ex}: disponibile ${v['available']:,.2f} · servono ${v['required']:,.2f} → {state}")
+        state = "not connected" if not v["connected"] else ("ok" if v["delta"] >= 0 else f"missing ${-v['delta']:,.2f}")
+        lines.append(f"- {ex}: available ${v['available']:,.2f} · needed ${v['required']:,.2f}: {state}")
     for m in moves:
-        lines.append(f"→ Sposta ${m['amount']:,.0f} USDC da {m['from']} a {m['to']} (VOOI → Transfer), poi apri.")
+        lines.append(f"- Move ${m['amount']:,.0f} USDC from {m['from']} to {m['to']} (VOOI > Transfer), then open.")
     if missing > 0:
-        lines.append(f"→ Capitale totale insufficiente: mancano ${missing:,.2f}. Deposita o riduci il notional.")
+        lines.append(f"- Total capital insufficient: missing ${missing:,.2f}. Deposit or reduce the notional.")
     return {"ok": ok, "venues": venues, "moves": moves, "missing": missing, "lines": lines}
 
 

@@ -1,7 +1,7 @@
-"""Client minimale per il server MCP VOOI (Streamable HTTP, JSON-RPC 2.0).
+"""Minimal client for the VOOI MCP server (Streamable HTTP, JSON-RPC 2.0).
 
-Espone gli stessi tool che Claude vede come `mcp__vooi-perps__*`, chiamati per nome
-(`get_funding_strategies`, `get_markets`, ...).
+Exposes the same tools an MCP-capable agent sees (`get_funding_strategies`, `get_markets`, ...),
+called by name. The toolkit talks to VOOI only through this client: agents never need MCP access.
 """
 
 import itertools
@@ -27,7 +27,7 @@ class VooiClient:
         self.url = url or os.environ.get("VOOI_MCP_URL") or DEFAULT_URL
         token = token or os.environ.get("VOOI_MCP_TOKEN")
         if not token:
-            raise MCPError("VOOI_MCP_TOKEN mancante: copia .env.example in .env (vedi README)")
+            raise MCPError("VOOI_MCP_TOKEN missing: copy .env.example to .env (see README)")
         header = os.environ.get("VOOI_MCP_AUTH_HEADER") or "Authorization"
         scheme = os.environ.get("VOOI_MCP_AUTH_SCHEME", "Bearer")
         self._http = httpx.Client(
@@ -78,10 +78,10 @@ class VooiClient:
                 if "error" in m:
                     raise MCPError(f"JSON-RPC error: {m['error']}")
                 return m["result"]
-        raise MCPError("risposta MCP senza id corrispondente")
+        raise MCPError("MCP response without a matching id")
 
     def _ensure_session(self) -> None:
-        # Lock dedicato: i worker paralleli aspettano che l'handshake sia finito.
+        # Dedicated lock: parallel workers wait for the handshake to finish.
         with self._init_lock:
             if self._initialized:
                 return
@@ -99,7 +99,7 @@ class VooiClient:
             self._initialized = True
 
     def call(self, tool: str, args: dict | None = None):
-        """Chiama un tool e restituisce il JSON decodificato (o il testo grezzo)."""
+        """Calls a tool and returns the decoded JSON (or the raw text)."""
         self._ensure_session()
         result = self._post({
             "jsonrpc": "2.0",
@@ -116,7 +116,7 @@ class VooiClient:
             return text
 
     def paginate(self, tool: str, args: dict, page_size: int = 100, max_items: int = 5000, stop=None) -> list:
-        """Scorre `{items, hasMore}`. `stop(item)` sull'ultimo elemento di pagina interrompe."""
+        """Walks `{items, hasMore}` pages. `stop(item)` on the last item of a page ends early."""
         items: list = []
         offset = 0
         while True:

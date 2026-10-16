@@ -1,5 +1,5 @@
-"""Piano d'ordine da eseguire a mano su VOOI: size identica in base asset sulle due gambe,
-arrotondata ai decimali di entrambe le venue, e ordine di esecuzione (prima il book più sottile)."""
+"""Order plan to run by hand on VOOI: identical base-asset size on both legs, rounded to the
+decimals of both venues, and execution order (thinner book first)."""
 
 import math
 
@@ -15,7 +15,7 @@ def _market(client: VooiClient, exchange: str, symbol: str) -> dict:
     items = client.call("get_markets", {"assets": [symbol], "exchanges": [exchange]}).get("items", [])
     exact = [m for m in items if m["exchange"] == exchange and m["baseSymbol"] == symbol]
     if not exact:
-        raise ValueError(f"mercato {symbol} non trovato su {exchange}")
+        raise ValueError(f"market {symbol} not found on {exchange}")
     return exact[0]
 
 
@@ -25,12 +25,12 @@ def build_plan(long_m: dict, short_m: dict, notional: float, leverage: float) ->
     decimals = min(int(long_m["baseDecimals"]), int(short_m["baseDecimals"]))
     size = round_down(notional / mid, decimals)
     if size <= 0:
-        raise ValueError(f"notional ${notional} troppo piccolo per i decimali ({decimals})")
+        raise ValueError(f"notional ${notional} too small for the size decimals ({decimals})")
     problems = [
-        f"leva {leverage:g}x oltre il massimo di {m['exchange']} ({m['maxLeverage']}x)"
+        f"leverage {leverage:g}x above the {m['exchange']} maximum ({m['maxLeverage']}x)"
         for m in (long_m, short_m) if m["maxLeverage"] < leverage
     ]
-    # Prima la gamba col volume più basso: è quella che rischia di più di non riempirsi bene.
+    # Lowest-volume leg first: it is the one most likely to fill badly.
     legs = [("long", long_m, "BUY", lp), ("short", short_m, "SELL", sp)]
     legs.sort(key=lambda x: x[1].get("volume24h") or 0)
     return {
@@ -55,19 +55,19 @@ def order_plan(client: VooiClient, long_spec: str, short_spec: str, notional: fl
 
 def render_plan(plan: dict, title: str = "") -> str:
     o = plan["order"]
-    lines = [f"PIANO D'ORDINE{(' · ' + title) if title else ''}"]
+    lines = [f"ORDER PLAN{(' · ' + title) if title else ''}"]
     if plan["problems"]:
-        lines += ["NON ESEGUIRE:"] + [f"- {p}" for p in plan["problems"]]
+        lines += ["DO NOT EXECUTE:"] + [f"- {p}" for p in plan["problems"]]
     lines += [
-        f"1. Imposta leva {plan['leverage']:g}x (cross) su {o[0]['symbol']} su {o[0]['exchange']} "
-        f"e su {o[1]['symbol']} su {o[1]['exchange']}.",
+        f"1. Set leverage {plan['leverage']:g}x (cross) on {o[0]['symbol']} on {o[0]['exchange']} "
+        f"and on {o[1]['symbol']} on {o[1]['exchange']}.",
         f"2. {o[0]['exchange']}: MARKET {o[0]['side']} {plan['size']:g} {o[0]['symbol']} "
-        f"(~${plan['size'] * o[0]['price']:,.2f}) — prima questa, book più sottile.",
-        f"3. Subito dopo, {o[1]['exchange']}: MARKET {o[1]['side']} {plan['size']:g} {o[1]['symbol']} "
+        f"(~${plan['size'] * o[0]['price']:,.2f}). This one first: thinner book.",
+        f"3. Right after, {o[1]['exchange']}: MARKET {o[1]['side']} {plan['size']:g} {o[1]['symbol']} "
         f"(~${plan['size'] * o[1]['price']:,.2f}).",
-        f"4. Verifica: stessa size ({plan['size']:g}) sulle due gambe, nessun ordine rimasto aperto. "
-        f"Margine ~${plan['margin_per_leg']:,.2f} per exchange.",
-        "Se il passo 3 fallisce: chiudi subito la gamba del passo 2 (market, reduce-only) e avvisami.",
-        f"Basis all'ingresso: {plan['basis_entry'] * 1e4:+.1f} bps (positivo = favorevole).",
+        f"4. Check: same size ({plan['size']:g}) on both legs, no order left open. "
+        f"Margin ~${plan['margin_per_leg']:,.2f} per exchange.",
+        "If step 3 fails: close the step 2 leg immediately (market, reduce-only).",
+        f"Entry basis: {plan['basis_entry'] * 1e4:+.1f} bps (positive = favorable).",
     ]
     return "\n".join(lines)

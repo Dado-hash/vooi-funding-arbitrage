@@ -1,4 +1,4 @@
-"""Carica config.toml e .env dalla root del progetto."""
+"""Loads config.toml and .env from the project root."""
 
 import os
 import tomllib
@@ -32,10 +32,10 @@ TRADING_MODES = ("notify", "execute")
 
 
 def trading_mode() -> str:
-    """`notify` (default): Claude manda istruzioni, l'utente opera su VOOI.
-    `execute`: proposte con Approva/Rifiuta, Claude esegue via MCP dopo il tap."""
+    """`notify` (default): the agent sends instructions, the user trades on VOOI.
+    `execute`: proposals with Approve/Reject; orders run via MCP only after the tap."""
     load_dotenv()
     mode = (os.environ.get("TRADING_MODE") or "notify").strip().lower()
     if mode not in TRADING_MODES:
-        raise ValueError(f"TRADING_MODE={mode!r} non valido: usa notify o execute")
+        raise ValueError(f"invalid TRADING_MODE={mode!r}: use notify or execute")
     return mode

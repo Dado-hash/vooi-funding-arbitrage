@@ -1,301 +1,353 @@
 # vooi-funding-arbitrage
 
-Toolkit per scegliere e monitorare strategie di funding arbitrage delta-neutral (long su una venue e short sulla stessa underlying su un'altra) tramite il server MCP di VOOI.
+Toolkit to choose and monitor **delta-neutral funding-arbitrage** strategies (long on one venue, short on the same underlying on another) through the VOOI perps MCP server. It scans the funding markets, ranks pairs by expected net return over your holding horizon, tracks open positions, and can propose, approve (via Telegram) and execute the orders.
 
-L'obiettivo non è l'APR più alto del momento. È il miglior **rendimento netto atteso sull'orizzonte di holding**, tenendo conto di quanto dura lo spread e dei costi di entrata e uscita. Uno spread da 1000% APR che si chiude in 20 minuti non copre le fee.
+> **Disclaimer.** This is experimental software and not financial advice. Trading perpetual futures with leverage can lose all of your capital, including through liquidation, fees, funding and slippage. Use it at your own risk, read the code before running it, and start with a very small size. The authors are not responsible for any losses.
 
-Il toolkit lo usa soprattutto Claude come analista: Claude esegue gli scan, interpreta i risultati e controlla periodicamente le posizioni. Cosa succede dopo dipende da `TRADING_MODE` in `.env`:
+The goal is not the highest APR right now. It is the best **expected net return over the holding horizon**, accounting for how long a spread lasts and for entry and exit costs. A 1000% APR spread that closes in 20 minutes does not cover the fees.
 
-- `notify` (default): Claude manda su Telegram analisi e istruzioni passo-passo, l'utente opera a mano su VOOI. Claude non esegue mai ordini (`arb execute` si rifiuta).
-- `execute`: ogni operazione arriva come **proposta con i pulsanti Approva/Rifiuta**. Solo dopo il tap Claude la esegue via MCP con `arb execute`.
+## Works with any coding agent
 
-Per cambiare modalità modifica `.env`. `uv run arb mode` mostra quella attiva.
+The toolkit is a plain Python CLI (`uv run arb ...`). An AI coding agent acts as the **analyst**: it runs scans, interprets results and checks positions periodically. It works with any agent that can run shell commands:
 
-## Setup
+- **Claude Code**: reads `CLAUDE.md` (which imports `AGENTS.md`); the monitoring loop is `/loop 1h /cycle`.
+- **Codex, Gemini CLI, Cursor, GitHub Copilot and others**: read `AGENTS.md`, the canonical instructions; the monitoring procedure is `docs/cycle.md`.
+- **Headless / cron**: `scripts/run-cycle.sh` runs one cycle with any agent CLI.
+
+The agent never needs MCP access: the CLI has its own client for the VOOI MCP server.
+
+Behavior depends on `TRADING_MODE` in `.env`:
+
+- `notify` (default): the agent sends analysis and step-by-step instructions to Telegram, and you place the orders by hand on VOOI. The agent never places orders (`arb execute` refuses).
+- `execute`: every operation arrives as a **proposal with Approve/Reject buttons**. Only after you tap Approve does the agent execute it, via `arb execute`.
+
+Check the active mode with `uv run arb mode`. To change it, edit `.env`.
+
+## Quickstart
 
 ```bash
 uv sync
-cp .env.example .env   # poi inserisci il token
-uv run pytest -q       # test offline su risposte MCP reali salvate
+cp .env.example .env   # then fill in the VOOI token (and Telegram, optional)
+uv run pytest -q       # offline tests on saved real MCP responses
+uv run arb scan        # first scan (needs the VOOI token in .env)
 ```
 
-`.env` contiene l'endpoint MCP (`https://perps-api.vooi.io/mcp`) e il token di accesso. Per sapere quale header usa il token, guarda la configurazione MCP di Claude Code con `claude mcp get vooi-perps`. Poi imposta `VOOI_MCP_AUTH_HEADER` e `VOOI_MCP_AUTH_SCHEME` di conseguenza. Senza token il server risponde `401 Invalid session id`.
+`.env` holds the MCP endpoint (`https://perps-api.vooi.io/mcp`) and your access token. Without a valid token the server answers `401 Invalid session id`. The header and scheme the token uses are set by `VOOI_MCP_AUTH_HEADER` and `VOOI_MCP_AUTH_SCHEME`; if you use Claude Code, `claude mcp get vooi-perps` shows your configuration.
 
-I parametri di default (venue, notional, orizzonte, soglie, fee) stanno in `config.toml`.
+Default parameters (venues, notional, horizon, thresholds, fees) live in `config.toml`. CLI flags override them.
 
-## Comandi
+## Telegram setup (optional, needed for `notify` delivery and `execute` approvals)
 
-| Comando | Cosa fa |
+1. In Telegram, create a bot with @BotFather and put the token in `.env` as `TELEGRAM_BOT_TOKEN`.
+2. Send any message to your bot, then run `uv run arb tg chat-id` and put the id in `.env` as `TELEGRAM_CHAT_ID`.
+3. Test it with `uv run arb tg send "test"`.
+4. Connect Hyperliquid and Lighter in the VOOI app ("Connect" and "Enable trading", which includes the builder approval).
+
+## Running the monitoring loop
+
+The full cycle procedure is in [`docs/cycle.md`](docs/cycle.md). Agents read it and follow it exactly.
+
+**Claude Code**: open a session in the project folder and run
+
+```
+/loop 1h /cycle
+```
+
+The `/cycle` skill lives in `.claude/skills/cycle/` and points to `docs/cycle.md`.
+
+**Other agents, headless, on a schedule**: `scripts/run-cycle.sh` runs one cycle with the agent command in `ARB_AGENT_CMD` (default `claude -p`). The prompt is `Run one monitoring cycle following docs/cycle.md.`. Examples for cron (`crontab -e`), run every hour:
+
+```cron
+# Claude Code (headless)
+0 * * * * cd /path/to/vooi-funding-arbitrage && claude -p "/cycle" >> data/cycle.log 2>&1
+# Codex
+0 * * * * cd /path/to/vooi-funding-arbitrage && ARB_AGENT_CMD="codex exec" scripts/run-cycle.sh >> data/cycle.log 2>&1
+# Gemini CLI
+0 * * * * cd /path/to/vooi-funding-arbitrage && ARB_AGENT_CMD="gemini -p" scripts/run-cycle.sh >> data/cycle.log 2>&1
+```
+
+A headless agent must be allowed to run `uv run arb ...` without asking for confirmation, otherwise the cycle stalls. For Claude Code, put this in `.claude/settings.local.json` (git-ignored):
+
+```json
+{"permissions": {"allow": ["Bash(uv run arb *)"]}}
+```
+
+Other agents have their own allowlist or approval settings: allow `uv run arb *` only.
+
+Notes:
+- The loop runs as long as the session stays open and the computer is on.
+- Orders still require a Telegram tap in `execute` mode, and `arb execute` re-checks the limits in `[execution]`.
+- To run the project on another machine you need the folder, your `.env` (VOOI token, Telegram, `TRADING_MODE`), `uv` and `uv sync`.
+- `data/arb.db` is rebuilt automatically, but the journal and proposals are lost: copy it if you want to keep them.
+
+Messages, to avoid spam:
+- **Immediately**: a proposal with buttons for each `[ACTION]` from the monitor (exit, rebalance, unhedged leg), and for each new opportunity or rotation above the playbook thresholds.
+- **Immediately**: a message without buttons when manual intervention is needed (for example, a failed safety close).
+- **Once a day** (first cycle after 9:00): a summary with positions, funding collected, current spreads and the top 3 opportunities.
+- Otherwise, no message.
+
+## Commands
+
+| Command | What it does |
 |---|---|
-| `uv run arb scan` | Funnel completo e tabella delle migliori coppie. Salva in `data/arb.db` e `data/scans/latest.json` |
-| `uv run arb scan --dex --notional 500` | Stesso scan su tutte le venue on-chain, con override dei parametri |
-| `uv run arb venues --dex --days 30` | Confronta le combinazioni di venue: universo, spread strutturali su 30 giorni, migliori 3 coppie valide al netto dei costi |
-| `uv run arb portfolio --capital 1000 --leverage 2 --max-k 5` | Simula il portafoglio: capitale diviso tra le venue, da 1 a K strategie in parallelo, rendimento in $ e distanza dalla liquidazione |
-| `uv run arb plan MET:hyperliquid MET:lighter --notional 450 --leverage 2 [--send]` | Piano d'ordine da eseguire a mano: size identica sulle due gambe (arrotondata ai decimali di entrambe), prima la gamba col book più sottile. `--send` lo manda su Telegram |
-| `uv run arb propose open MET:hyperliquid MET:lighter --notional 1000 --reason "..."` | Crea una proposta di apertura e la manda su Telegram con Approva/Rifiuta |
-| `uv run arb propose close MET:hyperliquid MET:lighter --reason "..."` | Proposta di chiusura (reduce-only, size prese dalle posizioni) |
-| `uv run arb tg wait <id>` | Aspetta il tap sulla proposta (long polling). Da lanciare in background: quando termina, Claude esegue |
-| `uv run arb tg poll` | Legge i tap arrivati e aggiorna le proposte |
-| `uv run arb execute <id> [--dry-run]` | Esegue una proposta APPROVATA (con `--dry-run` fa solo i controlli) e manda l'esito su Telegram |
-| `uv run arb proposals [--status pending]` | Elenco proposte |
-| `uv run arb mode` | Mostra `TRADING_MODE` |
-| `uv run arb capital [--notional 500 --leverage 2]` | Saldi per venue. Con `--notional`: margine richiesto e spostamenti necessari per aprire una strategia |
-| `uv run arb daily [--mark]` | Dice se il riepilogo giornaliero è dovuto (`due`/`done`). `--mark` dopo l'invio |
-| `uv run arb tg send "testo"` / `echo testo \| uv run arb tg send` | Invia un messaggio su Telegram |
-| `uv run arb tg chat-id` | Mostra le chat che hanno scritto al bot (per ricavare `TELEGRAM_CHAT_ID`) |
-| `uv run arb pair CHIP:aster CHIP:hyperliquid` | Analisi completa di una singola coppia (`SYM:exchange` long, poi short) |
-| `uv run arb monitor [--scan]` | Accoppia le posizioni aperte, controlla rischio e spread, propone azioni |
-| `uv run arb journal open CHIP:aster CHIP:hyperliquid --notional 1000 --thesis "..."` | Registra una strategia aperta |
-| `uv run arb journal close 1 --reason "spread negativo" --realized 4.2` | La chiude |
-| `uv run arb journal list [--open]` | Elenco |
-| `uv run arb call get_markets '{"assets":["ETH"]}'` | Chiamata grezza a qualsiasi tool MCP |
+| `uv run arb scan` | Full funnel and table of the best pairs. Saves to `data/arb.db` and `data/scans/latest.json` |
+| `uv run arb scan --dex --notional 500` | Same scan on all on-chain venues, with parameter overrides |
+| `uv run arb venues --dex --days 30` | Compares venue combinations: universe, structural spreads over 30 days, best 3 valid pairs net of costs |
+| `uv run arb portfolio --capital 1000 --leverage 2 --max-k 5` | Simulates the portfolio: capital split across venues, 1 to K strategies in parallel, $ return and liquidation distance |
+| `uv run arb plan MET:hyperliquid MET:lighter --notional 450 --leverage 2 [--send]` | Order plan to execute by hand: identical size on both legs (rounded to both venues' decimals), thinnest book first. `--send` posts it to Telegram |
+| `uv run arb propose open MET:hyperliquid MET:lighter --notional 1000 --reason "..."` | Creates an opening proposal and sends it to Telegram with Approve/Reject |
+| `uv run arb propose close MET:hyperliquid MET:lighter --reason "..."` | Closing proposal (reduce-only, sizes taken from the positions) |
+| `uv run arb tg wait <id>` | Waits for the tap on a proposal (long polling). Run in the background: when it ends, the agent executes |
+| `uv run arb tg poll` | Reads the taps received and updates the proposals |
+| `uv run arb execute <id> [--dry-run]` | Executes an APPROVED proposal (`--dry-run` only runs the checks) and sends the outcome to Telegram |
+| `uv run arb proposals [--status pending]` | Lists proposals |
+| `uv run arb mode` | Shows `TRADING_MODE` |
+| `uv run arb capital [--notional 500 --leverage 2]` | Balances per venue. With `--notional`: required margin and transfers needed to open a strategy |
+| `uv run arb daily [--mark]` | Says whether the daily summary is due (`due`/`done`). `--mark` after sending it |
+| `uv run arb tg send "text"` / `echo text \| uv run arb tg send` | Sends a message on Telegram |
+| `uv run arb tg chat-id` | Shows the chats that wrote to the bot (to find `TELEGRAM_CHAT_ID`) |
+| `uv run arb pair CHIP:aster CHIP:hyperliquid` | Full analysis of a single pair (`SYM:exchange` long, then short) |
+| `uv run arb monitor [--scan]` | Pairs open positions, checks risk and spreads, proposes actions |
+| `uv run arb journal open CHIP:aster CHIP:hyperliquid --notional 1000 --thesis "..."` | Records an opened strategy |
+| `uv run arb journal close 1 --reason "negative spread" --realized 4.2` | Closes it |
+| `uv run arb journal list [--open]` | Lists journal entries |
+| `uv run arb call get_markets '{"assets":["ETH"]}'` | Raw call to any MCP tool |
 
-Aggiungi `--json` a `scan`, `venues` e `monitor` per l'output completo. Flag utili per `scan` e `venues`: `--venues a,b`, `--dex`, `--all-venues`, `--days`, `--horizon`, `--notional`, `--min-hist-apr`, `--deep`.
+Add `--json` to `scan`, `venues` and `monitor` for full output. Useful flags for `scan` and `venues`: `--venues a,b`, `--dex`, `--all-venues`, `--days`, `--horizon`, `--notional`, `--min-hist-apr`, `--deep`.
 
-Un primo scan su tutte le venue DEX richiede circa 3 minuti, perché scarica 30 giorni di storico per circa 740 mercati. Gli scan successivi aggiornano solo le ultime ore.
+A first scan of all DEX venues takes about 3 minutes, because it downloads 30 days of history for about 740 markets. Later scans only update the latest hours.
 
-## Come funziona lo scan
+## How the scan works
 
-1. **Universo**: `get_funding_strategies` restituisce **tutte** le coppie, filtrate solo per volume, senza soglia sull'APR attuale. Se `both_legs = true`, entrambe le gambe devono stare in `venues`. La UI VOOI fa lo stesso. Il filtro `exchanges` dell'MCP invece accetta una coppia anche se solo una gamba è nella lista.
-2. **Storico**: per ogni mercato coinvolto scarica il funding orario con `get_funding_rate_history`, in cache nella tabella SQLite `funding_history`. Lo spread di ogni coppia si calcola in locale come `funding_short − funding_long`: il risultato coincide esattamente con `get_funding_spread_chart`. Così la durata si valuta sull'intero universo con circa N chiamate invece di N². Lo scan precedente invece analizzava solo le coppie con l'APR attuale più alto e, su tutte le venue, finiva per selezionare quasi solo picchi.
-3. **Classifica**: entrano solo le coppie con APR medio a 7 giorni ≥ `min_hist_apr`, ordinate per `score` con le fee della configurazione.
-4. **Costi reali**: per le prime `deep` coppie:
-   - `get_markets` (una chiamata paginata per venue) per prezzo, OI, intervallo e prossimo settlement;
-   - `estimate_slippage` per lo slippage e il fill;
-   - `get_quotes` per le fee reali del singolo mercato (`feesBps`, fee VOOI incluse).
+1. **Universe**: `get_funding_strategies` returns **all** pairs, filtered only by volume, with no threshold on the current APR. If `both_legs = true`, both legs must be in `venues`, as in the VOOI UI. The MCP `exchanges` filter instead accepts a pair even if only one leg is in the list.
+2. **History**: for each market involved, it downloads hourly funding with `get_funding_rate_history`, cached in the SQLite table `funding_history`. The spread of each pair is computed locally as `funding_short − funding_long`, which matches `get_funding_spread_chart` exactly. Duration can therefore be evaluated over the whole universe with about N calls instead of N². An earlier version analysed only the pairs with the highest current APR, which on all venues selected mostly spikes.
+3. **Ranking**: only pairs with a 7-day mean APR ≥ `min_hist_apr` enter, sorted by `score` using the configured fees.
+4. **Real costs**: for the top `deep` pairs:
+   - `get_markets` (one paginated call per venue) for price, OI, interval and next settlement;
+   - `estimate_slippage` for slippage and fill;
+   - `get_quotes` for the real fees of the single market (`feesBps`, VOOI fees included).
 
-### Metriche (per ogni coppia)
+### Metrics (per pair)
 
-Spread = `short_rate − long_rate`, orario. I rendimenti sono una frazione del notional di **una** gamba, come nella UI VOOI.
+Spread = `short_rate − long_rate`, hourly. Returns are a fraction of the notional of **one** leg, as in the VOOI UI.
 
-| Campo | Significato |
+| Field | Meaning |
 |---|---|
-| `APRnow` | Spread attuale annualizzato (il `netApr` di VOOI, che in realtà è lordo) |
-| `APR24h/72h/7d` | Media dello spread sulla finestra, annualizzata |
-| `pos72` | Quota di ore con spread > 0 nelle ultime 72h: misura la stabilità |
-| `strk` | Ore consecutive con spread positivo fino ad ora |
-| `hl` | Half-life: ore perché la deviazione attuale dalla media si dimezzi (da `phi`, autocorrelazione lag-1). Basso = picco effimero |
-| `exp` | Funding atteso sull'orizzonte con un modello AR(1) (lo spread parte dal valore attuale e torna verso la media: 50% 72h + 50% 7d), più il P&L di basis atteso |
-| `cons` | Scenario pessimista: la media più bassa tra 24h, 72h e 7d tenuta per tutto l'orizzonte, più il P&L di basis pessimista |
-| `cost` | Costi round-trip: fee taker × 2 gambe × (entrata + uscita) + slippage × 2 |
-| `net` | `(exp + cons)/2 − cost`, cioè il rendimento netto atteso |
-| `score` | `net` annualizzato sull'orizzonte. **È la metrica di ranking** |
-| `BE` | Ore di holding necessarie per coprire i costi |
-| `APR30`/`pos_all` (JSON: `mean_all`, `pos_all`) | Media e quota di ore positive su tutto lo storico (`history_days`, default 30): distingue uno spread strutturale da un regime recente |
-| `apr_on_capital` | Netto annualizzato sul capitale impegnato, leva inclusa: `net × leva/2 × 8760/orizzonte`. Il margine totale è 2 gambe × notional / leva, quindi a 2x coincide con il netto per gamba. **Obiettivo minimo: 20%** (`min_apr_on_capital` in `[strategy]`) |
-| `roi_on_margin` | `net` × leva comune ÷ 2: rendimento sul margine totale delle due gambe |
-| `basis_entry` | `(prezzo_short − prezzo_long)/mid` all'ingresso. Positivo = favorevole |
-| `basis_mean` | Media storica del basis dagli snapshot di prezzo (`price_snapshots`, uno per scan). Si usa da 24 snapshot in su |
+| `APRnow` | Current spread, annualized (VOOI's `netApr`, which is actually gross) |
+| `APR24h/72h/7d` | Mean spread over the window, annualized |
+| `pos72` | Share of hours with spread > 0 in the last 72h: measures stability |
+| `strk` | Consecutive hours with positive spread up to now |
+| `hl` | Half-life: hours for the current deviation from the mean to halve (from `phi`, lag-1 autocorrelation). Low = ephemeral peak |
+| `exp` | Expected funding over the horizon with an AR(1) model (the spread starts at the current value and reverts toward the mean: 50% 72h + 50% 7d), plus the expected basis P&L |
+| `cons` | Pessimistic scenario: the lowest mean among 24h, 72h and 7d held for the whole horizon, plus the pessimistic basis P&L |
+| `cost` | Round-trip costs: taker fee × 2 legs × (entry + exit) + slippage × 2 |
+| `net` | `(exp + cons)/2 − cost`, i.e. the expected net return |
+| `score` | `net` annualized over the horizon. **This is the ranking metric** |
+| `BE` | Holding hours needed to cover the costs |
+| `APR30`/`pos_all` (JSON: `mean_all`, `pos_all`) | Mean and share of positive hours over the whole history (`history_days`, default 30): separates a structural spread from a recent regime |
+| `apr_on_capital` | Net annualized return on committed capital, leverage included: `net × leverage/2 × 8760/horizon`. Total margin is 2 legs × notional / leverage, so at 2x it equals the per-leg net. **Minimum target: 20%** (`min_apr_on_capital` in `[strategy]`) |
+| `roi_on_margin` | `net` × common leverage ÷ 2: return on the total margin of both legs |
+| `basis_entry` | `(short price − long price)/mid` at entry. Positive = favorable |
+| `basis_mean` | Historical mean basis from price snapshots (`price_snapshots`, one per scan). Used from 24 snapshots onward |
 
-### Basis (differenza di prezzo tra le venue)
+### Basis (price difference between venues)
 
-Il P&L di prezzo di una coppia è `b₀ − b_uscita`, con b = (prezzo short − prezzo long)/mid:
-- **atteso**: se c'è storico, `b₀ − basis_mean` (si torna al livello normale della coppia). Senza storico, `b₀ × 0.5` (convergenza parziale verso zero);
-- **pessimista**: un basis sfavorevole converge (si perde), uno favorevole persiste (si guadagna zero).
+The price P&L of a pair is `b₀ − b_exit`, with b = (short price − long price)/mid:
+- **expected**: if there is history, `b₀ − basis_mean` (the pair returns to its normal level). Without history, `b₀ × 0.5` (partial convergence toward zero);
+- **pessimistic**: an unfavorable basis converges (a loss), a favorable one persists (zero gain).
 
-Ogni scan salva i prezzi di tutti i mercati delle venue configurate, così la stima del basis normale migliora nel tempo. Sulle coppie HL/Lighter liquide il basis d'ingresso vale tipicamente 5-15 bps: poco rispetto al funding settimanale, ma paragonabile alle fee.
+Every scan stores the prices of all markets on the configured venues, so the estimate of the normal basis improves over time. On liquid HL/Lighter pairs the entry basis is typically 5-15 bps: small compared to weekly funding, but comparable to the fees.
 
-### Flag
+### Flags
 
-`storico corto`, `spread attuale negativo`, `regime recente` (positivo meno del 50% delle ore su tutto lo storico), `spread medio 24h negativo`, `instabile` (pos72 < 60%), `picco` (attuale > 3× media 7d), `costi non coperti entro l'orizzonte`, `OI basso`, `slippage alto` (> 15 bps), `book insufficiente`, `settlement imminente` (venue con intervallo di 4h o 8h, prossimo pagamento entro 60 minuti), `orari limitati` (mercato non 24x7: rischio gap), `stessa venue, sottostanti diversi` (es. USBOND contro TLT: non è delta-neutral puro), `basis sfavorevole`, `sotto obiettivo` (`apr_on_capital` sotto il 20%: non blocca lo scan, ma `arb portfolio` e il ciclo non aprono queste coppie).
+- `short history (Nh)`: not enough history;
+- `negative current spread: entering now pays funding`;
+- `recent regime: ...` (positive in less than 50% of the hours over the whole history);
+- `negative 24h mean spread`;
+- `unstable: positive X% of hours over 72h` (pos72 < 60%);
+- `spike: current spread >3x the 7d mean`;
+- `costs not covered within the horizon`;
+- `low OI on <exchange>`;
+- `slippage not estimated on <exchange>` / `high slippage on <exchange>` (> 15 bps);
+- `thin book on <exchange> (N% filled)`;
+- `settlement on <exchange> ...`: imminent payment (venues with a 4h or 8h interval, next payment within 60 minutes);
+- `limited hours on <exchange> ...: gap risk` (market not 24x7);
+- `same venue, different underlyings: basis risk` (e.g. USBOND against TLT: not pure delta-neutral);
+- `unfavorable entry basis`;
+- `below target: X on capital (min Y)` (`apr_on_capital` under 20%: does not block the scan, but `arb portfolio` and the cycle do not open these pairs);
+- `cost analysis failed: ...`.
 
-Flag bloccanti (`is_viable` li esclude): `costi non coperti`, `book insufficiente`, `spread medio 24h negativo`, `instabile`, `analisi costi fallita`.
+Blocking flags (`is_viable` excludes them): `costs not covered`, `thin book`, `negative 24h mean spread`, `unstable`, `cost analysis failed`.
 
-## Confronto tra venue (`arb venues`)
+## Venue comparison (`arb venues`)
 
-Raggruppa le coppie per combinazione di venue e analizza a fondo le migliori `--per-pair` di ciascuna. Colonne:
-- `univ`: coppie nell'universo;
-- `hist`: coppie oltre `min_hist_apr`;
-- `struct`: coppie con APR medio ≥ 15% e positive ≥ 75% delle ore su tutto lo storico;
-- `sAPR3`: APR medio delle 3 coppie strutturali migliori;
-- `valid`: coppie con netto positivo e senza flag bloccanti;
-- `top3`: somma del netto delle 3 migliori coppie valide sull'orizzonte (si possono tenere in parallelo);
-- `costMed`: costo round-trip mediano.
+Groups pairs by venue combination and analyses the best `--per-pair` of each in depth. Columns:
+- `univ`: pairs in the universe;
+- `hist`: pairs above `min_hist_apr`;
+- `struct`: pairs with mean APR ≥ 15% and positive in ≥ 75% of the hours over the whole history;
+- `sAPR3`: mean APR of the 3 best structural pairs;
+- `valid`: pairs with positive net and no blocking flag;
+- `top3`: sum of the net of the 3 best valid pairs over the horizon (they can be held in parallel);
+- `costMed`: median round-trip cost.
 
-### Analisi del 2026-10-15 (solo venue on-chain, orizzonte 7 giorni)
+## Portfolio (`arb portfolio`)
 
-| Venue | Top3 a $1000/gamba | Top3 a $5000/gamba | Costo mediano | Note |
+Capital is split equally across the venues. The maximum notional per venue is `margin × leverage × utilization` (default utilization 90%, leaving a buffer for fees and P&L). With K strategies each leg is worth `maximum notional / K`. Candidates are valid pairs without the flags `negative current spread`, `same venue` or `limited hours`, and whose common maximum leverage is ≥ the chosen leverage. Risk measures:
+- `liqIso`: adverse move that liquidates one leg in isolated margin, `1/leverage − 1/(2 × max leverage)`;
+- `shockX`: adverse move of a single asset that liquidates a venue's account in cross margin, with the other legs unchanged.
+
+The two legs' P&L sits on different venues: a gain on one does not cover a loss on the other without a transfer. For this reason the monitor checks each leg's distance to liquidation.
+
+## Monitoring (`arb monitor`)
+
+- pairs positions by asset (strips HIP-3 prefixes and `USDT`/`USDC` suffixes);
+- reports unhedged legs;
+- checks distance to liquidation (`min_liq_distance`) and notional imbalance (`max_imbalance`);
+- computes the expected spread over the next `exit_lookahead_h` hours. If it is worse than the exit cost, it proposes **exit**;
+- compares each position with the best candidate from the last scan without flags. It proposes a **rotation** if the net gain, after exit and new-entry costs, beats holding by `rotate_min_uplift`;
+- compares positions with the journal (positions that disappeared, positions not recorded).
+
+## Telegram, approvals and execution
+
+### Proposal flow
+
+1. The agent creates the proposal with `arb propose`. The exact order parameters are stored in SQLite, and the proposal expires after `proposal_ttl_min` (15 minutes).
+2. A summary with ✅ Approve and ❌ Reject arrives on Telegram.
+3. The agent runs `arb tg wait <id>` in the background. Your tap ends the process and wakes the agent.
+4. If you approved, the agent runs `arb execute <id>`.
+5. The outcome arrives on Telegram.
+
+### Security
+
+- **Sender**: only taps from your `TELEGRAM_CHAT_ID` count. Anyone else gets "Not authorized".
+- **Buttons only**: text messages are ignored and are never instructions.
+- **Validity**: an approval covers one proposal only, only before it expires, and the proposal runs at most once.
+- **Independent limits**: `arb execute` re-checks `[execution]` in `config.toml` (allowed venues, maximum notional per leg, maximum leverage) whatever the proposal contains.
+- **Market conditions**: before executing it re-checks the price (maximum drift 1%) and, for openings, that the funding spread is still positive and the basis has not worsened by more than 20 bps. If anything fails, the proposal becomes `stale` and a new one is needed.
+
+### Execution
+
+- **Leverage**: set on both legs.
+- **TP/SL**: the opening orders already carry them (`stopLoss`/`takeProfit` brackets of `create_order`). After opening, `arb execute` checks that there are 2 orders per leg and that the stops trigger before the real liquidation. If something does not match, the outcome says so.
+- **Legs**: one at a time, market orders, thinnest book first. After each order, `get_positions` verifies the size.
+- **Second leg failed**: the first leg is closed immediately (reduce-only), so you are never left uncovered.
+- **Closes**: always reduce-only. After a close, and also after a safety close, the reduce-only orders (TP/SL) left on the closed legs are cancelled: they would stay active and could hit a future position on the same asset.
+- **Journal**: successful openings are recorded automatically.
+- **Position format**: verified against a real position on Hyperliquid and Lighter (`tests/fixtures/positions.json`). VOOI does not return a mark price: `normalize_position` derives it from the entry price and uPnL, and computes notional and liquidation distance from there. The `arb execute` flow has not yet been tested with live orders.
+
+### Capital check
+
+Before each opening proposal, `arb propose` reads balances with `get_accounts`. For each venue it compares the available balance with the required margin: `notional / leverage × (1 + capital_buffer)`, with a 10% buffer for fees and swings.
+- **Funds unbalanced across venues**: it suggests the transfer ("move $X USDC from Lighter to Hyperliquid", on VOOI → Transfer), rounded to $5.
+  - `notify`: the transfer is the first step of the message.
+  - `execute`: the proposal with buttons is not created until the funds are in place, so you never approve a trade that cannot be executed.
+- **Total capital insufficient**: no proposal, only a warning with the shortfall.
+- **Execution**: `arb execute` re-checks the margin before placing orders, with a 2% buffer.
+- **Transfers**: the agent only suggests them, never executes them.
+- **To validate**: the `get_accounts` format has not yet been checked with many connected exchanges (`normalize_account` tries several field names). Check it on the first `arb capital` run with real funds. Hyperliquid HIP-3 markets (`xyz:`, …) have margin separate from the main account: the cycle does not open them.
+
+### Protective TP/SL
+
+The two legs sit on different venues: if the price moves a lot, one leg approaches liquidation while the other gains, and that gain does not cover it without a transfer. For this reason each opening has two price levels, common to both legs (`arb/protection.py`):
+- **down** (`down`): stop-loss of the long and take-profit of the short;
+- **up** (`up`): stop-loss of the short and take-profit of the long.
+
+Both legs close together at the same price. The levels sit at `tp_sl_liq_fraction` (70%) of the estimated isolated liquidation distance, `1/leverage − 1/(2 × max leverage)`, computed for each leg's venue. In cross margin the real liquidation is further away, so the estimate is conservative. At 2x on MET Hyperliquid/Lighter: −23% and +28%, against estimated liquidations at −33% and +40%. Prices have at most 5 significant digits and are rounded toward the current price.
+
+Example of a mistake this prevents: a short stop-loss at 0.5306 with liquidation at 0.5170. The short would have been liquidated before its stop, leaving the long open alone. You can disable it with `tp_sl = false` in `[execution]`.
+
+### Telegram messages
+
+Instructions (`notify`) and proposals (`execute`) are Telegram HTML: bold titles, sizes and prices in `code` (copyable with a tap), a link to the Arbitrage Desk, and the local expiry time. After a tap, the note "Approved"/"Rejected" is appended at the end and the formatting is kept. Free-form cycle messages (`arb tg send`) stay plain text. In the terminal the same text is printed without tags.
+
+### notify mode
+
+With `TRADING_MODE=notify`, `arb propose` does not send buttons but instructions to follow on VOOI:
+- pair and direction, with a link to the Arbitrage Desk page;
+- leverage, Taker–Taker order type, size per leg;
+- TP/SL per leg, with the prices to enter;
+- what to check after opening;
+- conditions under which not to open, if the spread or price has changed.
+
+Closing instructions remind you to cancel the leftover TP/SL.
+
+At the next cycle the agent finds the open position with `arb monitor` and records it in the journal.
+
+## Configuration
+
+All defaults are in `config.toml`:
+
+- `[scan]`: venues, notional, horizon, thresholds (`min_hist_apr`, `min_volume_usd`, `min_oi_usd`), depth of cost analysis (`deep`), history length (`history_days`).
+- `[venues]`: list of on-chain (`dex`) venues used by `--dex`.
+- `[fees.taker]`: estimated taker fee per venue (used in stage 2; stage 3 reads real fees from `get_quotes`).
+- `[execution]`: limits for `arb execute` (venues, max notional per leg, max leverage, max price drift, max basis worsening, proposal TTL, TP/SL settings). These apply whatever a proposal contains.
+- `[strategy]`: the rules for opening new strategies (`max_strategies`, `notional_per_strategy`, `leverage`, `min_apr_on_capital`, `max_breakeven_h`, `capital_buffer`). The defaults are an example for about $120 of total capital: one strategy, $100 per leg.
+- `[monitor]`: thresholds for position alarms and rotation (`min_liq_distance`, `max_imbalance`, `exit_lookahead_h`, `rotate_min_uplift`).
+
+Command-line flags take precedence over `config.toml`. Secrets (VOOI token, Telegram token and chat id) and the trading mode live in `.env`, never in `config.toml`.
+
+## Analyst playbook
+
+The full playbook for the agent is in [`AGENTS.md`](AGENTS.md). In short:
+
+1. Run `arb scan`. Discard pairs with blocking flags.
+2. Among the rest, prefer a high `score`, `pos72` ≥ 80%, `BE` well below the horizon, a long half-life, and enough OI and volume for the notional.
+3. Be wary of an `APRnow` far above `APR7d`: it is usually a spike.
+4. For the best 2-3, run `arb pair` and look at the individual legs' funding history.
+5. Size with `arb portfolio`.
+6. Propose to the user, with `arb plan` attached.
+7. Every operation goes through `arb propose`, then `arb tg wait`, then `arb execute` only if approved.
+
+## Example findings
+
+These are dated analyses from 2026-10-15, included as an example of what the tool produces. They are not recommendations and the numbers have moved since.
+
+### Venue comparison (on-chain venues only, 7-day horizon)
+
+| Venue | Top3 at $1000/leg | Top3 at $5000/leg | Median cost | Notes |
 |---|---|---|---|---|
-| Aster + Hyperliquid | +2.35% | +1.45% | 0.58% → 1.02% | Guidato da RSR e BLUR: book Aster sottili (OI $20-28k, slippage 35-50 bps). Senza queste due resta solo MET (+0.29% a $5k) |
-| **Hyperliquid + Lighter** | +1.32% | +1.17% | 0.30% → 0.40% | Fee più basse (4.5 + 2.5 bps), book più profondi, 6 coppie strutturali. Scala meglio |
-| Lighter + Ondo | +0.70% | - | 0.22% | Molte coppie valide ma piccole (azioni) |
-| Aster + Lighter | +0.09% | +0.07% | 0.63% | Quasi nulla |
+| Aster + Hyperliquid | +2.35% | +1.45% | 0.58% → 1.02% | Driven by RSR and BLUR: thin Aster books (OI $20-28k, slippage 35-50 bps). Without them only MET remains (+0.29% at $5k) |
+| **Hyperliquid + Lighter** | +1.32% | +1.17% | 0.30% → 0.40% | Lower fees (4.5 + 2.5 bps), deeper books, 6 structural pairs. Scales better |
+| Lighter + Ondo | +0.70% | - | 0.22% | Many valid but small pairs (stocks) |
+| Aster + Lighter | +0.09% | +0.07% | 0.63% | Almost nothing |
 
-Scelta: **Hyperliquid + Lighter**. Aster può servire come terza venue per outlier come RSR (941% APR medio su 30 giorni, positivo nel 94% delle ore), ma solo con size piccole. Hyperliquid compare in tutte le combinazioni migliori.
+The choice was **Hyperliquid + Lighter**. Aster can serve as a third venue for outliers such as RSR (941% mean APR over 30 days, positive in 94% of hours), but only with small sizes. Hyperliquid appears in all the best combinations.
 
-Lezione dei 30 giorni: molti spread ottimi sulla settimana (MET, BLUR) sono regimi recenti, positivi solo nell'11-32% delle ore su 30 giorni. Le opportunità ruotano: conta avere venue con un universo ampio e costi bassi, più che una singola coppia.
+Lesson from the 30 days: many excellent one-week spreads (MET, BLUR) are recent regimes, positive in only 11-32% of hours over 30 days. Opportunities rotate: having venues with a broad universe and low costs matters more than any single pair.
 
-## Portafoglio (`arb portfolio`)
+### Portfolio simulation (2026-10-15: $1000, $500 per venue, 2x leverage, 7-day horizon)
 
-Il capitale è diviso in parti uguali tra le venue. Il notional massimo per venue è `margine × leva × utilizzo` (utilizzo di default 90%, per lasciare un buffer a fee e P&L). Con K strategie ogni gamba vale `notional massimo / K`. Le candidate sono le coppie valide che non hanno i flag `spread attuale negativo`, `stessa venue` o `orari limitati` e la cui leva massima comune è ≥ della leva scelta. Rischio:
-- `liqIso`: movimento avverso che liquida una gamba in isolated, `1/leva − 1/(2 × leva massima)`;
-- `shockX`: movimento avverso di un solo asset che liquida il conto di una venue in cross margin, con le altre gambe ferme.
-
-Il P&L delle due gambe sta su venue diverse: il guadagno su una non copre la perdita sull'altra senza un trasferimento. Per questo il monitor controlla la distanza dalla liquidazione di ogni gamba.
-
-### Simulazione del 2026-10-15 ($1000, $500 per venue, leva 2x, orizzonte 7 giorni)
-
-| K | $/gamba | Netto atteso | Netto pessimista | ROI 7g | APR sul capitale | Shock singolo asset (cross) |
+| K | $/leg | Expected net | Pessimistic net | 7d ROI | APR on capital | Single-asset shock (cross) |
 |---|---|---|---|---|---|---|
 | 1 | 900 | $8.35 | $6.96 | 0.83% | 43% | 39% |
 | 2 | 450 | $5.59 | $4.40 | 0.56% | 29% | 89% |
 | 3 | 300 | $4.35 | $3.36 | 0.44% | 23% | 135% |
 
-K=1 è tutto su MET, un regime recente (positivo solo nel 33% delle ore su 30 giorni). Con K=2 si aggiunge SAMSUNG: rende di meno ma rischia molto meno.
+K=1 is all MET, a recent regime (positive in only 33% of hours over 30 days). With K=2, SAMSUNG is added: it returns less but carries much less risk.
 
-## Monitoraggio
+## Known limitations
 
-`arb monitor`:
-- accoppia le posizioni per asset (toglie i prefissi HIP-3 e i suffissi `USDT`/`USDC`);
-- segnala le gambe scoperte;
-- controlla la distanza dalla liquidazione (`min_liq_distance`) e lo sbilanciamento del notional (`max_imbalance`);
-- calcola lo spread atteso nelle prossime `exit_lookahead_h` ore. Se è peggiore del costo di uscita propone **esci**;
-- confronta la posizione con il miglior candidato dell'ultimo scan senza flag. Propone una **rotazione** se il guadagno netto, dopo i costi di uscita e di nuova entrata, supera il hold di `rotate_min_uplift`;
-- confronta le posizioni con il journal (posizioni sparite, posizioni non registrate).
+- The fees in `config.toml` come from `get_quotes` without connected exchanges. With a connected account the tier may differ: stage 3 still uses `get_quotes`.
+- TP/SL brackets on market orders have not yet been exercised by `arb execute` with live orders. VOOI created them correctly when opening from the Arbitrage Desk: on Hyperliquid as separate trigger orders, on Lighter attached to the position. On first use, check the outcome ("TP/SL ok" or WARNING).
+- The mark price of positions is derived from VOOI's entry price and uPnL: it can differ by a few bps from the venue's mark (on Lighter `data.positionValue` uses a slightly different price).
+- Exit slippage is assumed equal to entry slippage. The basis does not enter the score.
+- Spread history on venues with 4h/8h funding is a step function: `phi` comes out higher.
+- Costs assume taker orders, by design: no limit orders, so that only one leg is never filled alone.
+- Bridge and collateral transfer costs between venues are not included.
+- With `--all-venues` the first scan downloads the history of several thousand markets (several minutes).
+- On Aster some assets have two markets (`XAG/USDT` and `XAG/USD1`). The scan resolves the ambiguity by passing the full pair symbol (`XAGUSDT`). Pairs with both legs on Aster (USDT against USD1) also exist.
 
-## Telegram, approvazioni ed esecuzione
+## Contributing
 
-Setup:
-1. Su Telegram crea un bot con @BotFather e copia il token in `.env` come `TELEGRAM_BOT_TOKEN`.
-2. Scrivi un messaggio qualsiasi al bot, poi esegui `uv run arb tg chat-id` e copia l'id in `.env` come `TELEGRAM_CHAT_ID`.
-3. Prova con `uv run arb tg send "test"`.
-4. Collega Hyperliquid e Lighter nell'app VOOI ("Connect" ed "Enable trading", che include l'approvazione del builder).
+Contributions are welcome. Read [`AGENTS.md`](AGENTS.md) for the project rules, which apply to every contributor and every coding agent:
 
-### Flusso di una proposta
+- code, comments, messages and docs are in English;
+- run `uv run pytest -q` after every code change;
+- update this README (relevant sections) and add an entry to [`CHANGELOG.md`](CHANGELOG.md) for any change to code, parameters or analysis method;
+- never commit `.env`, `data/` or `.claude/settings.local.json`.
 
-1. Claude crea la proposta con `arb propose`. I parametri esatti degli ordini restano in SQLite e la proposta scade dopo `proposal_ttl_min` (15 minuti).
-2. Su Telegram arriva il riepilogo con ✅ Approva e ❌ Rifiuta.
-3. Claude lancia `arb tg wait <id>` in background. Il tuo tap chiude il processo e lo risveglia.
-4. Se hai approvato, Claude esegue `arb execute <id>`.
-5. L'esito arriva su Telegram.
+Tests run offline against saved real responses in `tests/fixtures/` and need no credentials. CI runs them on every push and pull request.
 
-### Sicurezza
+## License
 
-- **Mittente**: contano solo i tap del tuo `TELEGRAM_CHAT_ID`. Gli altri ricevono "Non autorizzato".
-- **Solo pulsanti**: i messaggi di testo vengono ignorati e non sono mai istruzioni.
-- **Validità**: un'approvazione vale per una sola proposta, solo prima della scadenza, e la proposta si esegue una volta sola.
-- **Limiti indipendenti**: `arb execute` ricontrolla `[execution]` in `config.toml` (venue ammesse, notional massimo per gamba, leva massima) qualunque cosa contenga la proposta.
-- **Condizioni di mercato**: prima di eseguire ricontrolla il prezzo (scostamento massimo 1%) e, per le aperture, che lo spread di funding sia ancora positivo e che il basis non sia peggiorato di oltre 20 bps. Se qualcosa non torna, la proposta passa a `stale` e Claude ne manda una nuova.
-
-### Esecuzione
-
-- **Leva**: viene impostata su entrambe le gambe.
-- **TP/SL**: gli ordini d'apertura li portano già (bracket `stopLoss`/`takeProfit` di `create_order`). Dopo l'apertura `arb execute` controlla che ci siano 2 ordini per gamba e che gli stop scattino prima della liquidazione reale. Se qualcosa non torna, lo segnala nell'esito.
-- **Gambe**: una alla volta, ordini market, prima il book più sottile. Dopo ogni ordine `get_positions` verifica la size.
-- **Seconda gamba fallita**: la prima viene chiusa subito (reduce-only), per non restare mai senza copertura.
-- **Chiusure**: sempre reduce-only. Dopo la chiusura, e anche dopo una chiusura di sicurezza, vengono cancellati gli ordini reduce-only (TP/SL) rimasti sulle gambe chiuse: resterebbero attivi e potrebbero colpire una posizione futura sullo stesso asset.
-- **Journal**: le aperture riuscite vengono registrate automaticamente.
-
-**Formato delle posizioni**: verificato il 2026-10-16 con una posizione reale su Hyperliquid e Lighter (`tests/fixtures/positions.json`). VOOI non restituisce il mark price: `normalize_position` lo ricava da prezzo d'entrata e uPnL, e da lì calcola notional e distanza dalla liquidazione. Il flusso di `arb execute` non è ancora stato provato con ordini veri.
-
-### Controllo del capitale
-
-Prima di ogni proposta di apertura, `arb propose` legge i saldi con `get_accounts`. Per ogni venue confronta il disponibile con il margine richiesto: `notional / leva × (1 + capital_buffer)`, con buffer del 10% per fee e oscillazioni.
-- **Fondi sbilanciati tra le venue**: suggerisce lo spostamento ("sposta $X USDC da Lighter a Hyperliquid", su VOOI → Transfer), arrotondato a $5.
-  - `notify`: lo spostamento è il primo passo del messaggio.
-  - `execute`: la proposta con i pulsanti non viene creata finché i fondi non sono a posto, così non approvi un trade che non si può eseguire.
-- **Capitale totale insufficiente**: nessuna proposta, solo l'avviso con quanto manca.
-- **Esecuzione**: `arb execute` ricontrolla il margine prima degli ordini, con un buffer del 2%.
-- **Trasferimenti**: Claude li suggerisce soltanto, mai li esegue.
-- **Da validare**: il formato di `get_accounts` non è ancora stato verificato con exchange collegati (`normalize_account` prova più nomi di campo). Va controllato al primo `arb capital` con fondi reali. I mercati HIP-3 di Hyperliquid (`xyz:`, …) hanno un margine separato dal conto principale: il ciclo non li apre.
-
-### TP/SL di protezione
-
-Le due gambe stanno su venue diverse: se il prezzo si muove molto, una gamba va verso la liquidazione mentre l'altra guadagna, e il guadagno non la copre senza un trasferimento. Per questo ogni apertura ha due livelli di prezzo, comuni alle due gambe (`arb/protection.py`):
-- **giù** (`down`): stop-loss del long e take-profit dello short;
-- **su** (`up`): stop-loss dello short e take-profit del long.
-
-Così entrambe le gambe si chiudono insieme allo stesso prezzo. I livelli stanno a `tp_sl_liq_fraction` (70%) della distanza di liquidazione stimata in isolated, `1/leva − 1/(2 × leva massima)`, calcolata per la venue di ciascuna gamba. In cross la liquidazione reale è più lontana, quindi la stima è prudente. A 2x su MET Hyperliquid/Lighter: −23% e +28%, contro liquidazioni stimate a −33% e +40%. I prezzi hanno al massimo 5 cifre significative e sono arrotondati verso il prezzo corrente.
-
-Errore da evitare (16/10, impostato a mano): stop dello short su Lighter a 0.5306 con liquidazione a 0.5170. Lo short sarebbe stato liquidato prima dello stop, e il long sarebbe rimasto aperto da solo. Si disattiva con `tp_sl = false` in `[execution]`.
-
-### Messaggi Telegram
-
-Le istruzioni (`notify`) e le proposte (`execute`) sono in HTML Telegram: titoli in grassetto, size e prezzi in `code` (si copiano con un tap), link all'Arbitrage Desk, ora di scadenza locale. Dopo il tap la nota "Approvata"/"Rifiutata" si aggiunge in coda e la formattazione resta. I messaggi liberi del ciclo (`arb tg send`) restano testo semplice. Nel terminale lo stesso testo si stampa senza tag.
-
-### Modalità notify
-
-Con `TRADING_MODE=notify`, `arb propose` non manda pulsanti ma istruzioni da seguire su VOOI:
-- coppia e direzione, con il link alla pagina dell'Arbitrage Desk;
-- leva, tipo Taker–Taker, size per gamba;
-- TP/SL per gamba, con i prezzi da inserire;
-- cosa controllare dopo l'apertura;
-- condizioni per non aprire, se lo spread o il prezzo sono cambiati.
-
-Le istruzioni di chiusura ricordano di cancellare i TP/SL rimasti.
-
-Al ciclo successivo Claude ritrova la posizione aperta con `arb monitor` e la registra nel journal.
-
-### Loop
-
-La procedura completa del ciclo sta nel comando di progetto `.claude/skills/ciclo/SKILL.md` (`/ciclo`). In una nuova sessione Claude Code aperta nella cartella del progetto basta:
-
-```
-/loop 1h /ciclo
-```
-
-Le regole di apertura (numero di strategie, notional, soglie) stanno in `[strategy]` in `config.toml`.
-
-Per usare il progetto su un'altra macchina servono:
-- la cartella del progetto;
-- `.env` (token VOOI, Telegram, `TRADING_MODE`);
-- `uv` e `uv sync`.
-
-`data/arb.db` si ricostruisce da solo, ma si perdono journal e proposte: copialo se vuoi mantenerli.
-
-`.claude/settings.local.json` consente `uv run arb *` senza conferma in Claude Code, così il loop non si blocca. Gli ordini restano legati al tap su Telegram e ai limiti di `arb execute`.
-
-Il loop funziona finché la sessione resta aperta e il computer acceso.
-
-Messaggi, per evitare spam:
-- **Subito**: proposta con pulsanti per ogni `[AZIONE]` del monitor (uscita, ribilanciamento, gamba senza l'altra) e per ogni nuova opportunità o rotazione sopra le soglie del playbook.
-- **Subito**: un messaggio senza pulsanti se la situazione richiede un intervento manuale (per esempio una chiusura di sicurezza fallita).
-- **Una volta al giorno** (primo ciclo dopo le 9:00): riepilogo con posizioni, funding incassato, spread attuali e prime 3 opportunità.
-- Altrimenti nessun messaggio.
-
-## Playbook dell'analista (Claude)
-
-1. Esegui `arb scan` (o `--json` per i dettagli). Scarta le coppie con flag bloccanti: `costi non coperti`, `book insufficiente`, `spread medio 24h negativo`.
-2. Fra le rimanenti preferisci, in quest'ordine: `score` alto, `pos72` ≥ 80%, `BE` ben sotto l'orizzonte, half-life lunga, OI e volume adeguati al notional.
-3. Diffida dell'`APRnow` molto sopra l'`APR7d`. Di solito è un picco: il modello lo sconta già, ma va detto all'utente.
-4. Per le 2-3 migliori esegui `arb pair` e, se serve, guarda `get_funding_rate_history` delle singole gambe: chi guida lo spread? È un funding negativo strutturale o un evento?
-5. Dimensiona con `arb portfolio` (capitale attuale: circa $116, cioè $58 per venue, leva 2x, una strategia da $100 per gamba; i limiti stanno in `[strategy]`). I mercati HIP-3 (`xyz:`, `mkts:`, `io:`) su Hyperliquid accettano solo isolated margin.
-6. Proponi all'utente coppia, direzione, notional, leva, rendimento atteso e pessimista, break-even e rischi. Allega il piano di `arb plan`.
-7. Ogni operazione passa da `arb propose`, poi `arb tg wait <id>` in background, poi `arb execute <id>` solo se approvata. **Mai** chiamare direttamente i tool di scrittura dell'MCP (`create_order`, `set_leverage`, trasferimenti, ...). Mai trasferimenti né prelievi.
-8. Ciclo di monitoraggio (loop orario):
-   - `arb tg poll` (tap arrivati mentre il loop dormiva) ed esecuzione delle proposte approvate;
-   - `arb monitor --scan`;
-   - confronta il report con le posizioni e con il journal;
-   - decidi se tenere, uscire, ribilanciare o ruotare;
-   - crea le proposte e i messaggi secondo le regole della sezione "Telegram, approvazioni ed esecuzione".
-
-   Un'uscita o una rotazione si propone solo se il netto atteso migliora dopo i costi di uscita e di nuova entrata.
-
-## Limiti noti
-
-- Le fee in `config.toml` vengono da `get_quotes` senza exchange collegati. Con un account collegato il tier potrebbe essere diverso: lo stadio 3 usa comunque `get_quotes`.
-- I TP/SL come bracket sugli ordini market non sono ancora stati provati da `arb execute` con ordini veri. VOOI li ha creati correttamente aprendo dall'Arbitrage Desk: su Hyperliquid come ordini trigger separati, su Lighter legati alla posizione. Al primo uso controlla l'esito ("TP/SL ok" oppure ATTENZIONE).
-- Il mark price delle posizioni è ricavato da entrata e uPnL di VOOI: può differire di qualche bps dal mark della venue (su Lighter `data.positionValue` usa un prezzo leggermente diverso).
-- Lo slippage di uscita è stimato uguale a quello di entrata. Il basis non entra nello score.
-- Lo storico dello spread sulle venue con funding a 4h/8h è una funzione a gradini: `phi` risulta più alto.
-- I costi assumono ordini taker, per scelta: niente ordini limit, per non rischiare che venga eseguita una sola gamba.
-- Non sono inclusi i costi di bridge e trasferimento del collaterale tra venue.
-- Con `--all-venues` il primo scan scarica lo storico di qualche migliaio di mercati (diversi minuti).
-- Su Aster alcuni asset hanno due mercati (`XAG/USDT` e `XAG/USD1`). Lo scan risolve l'ambiguità passando la coppia completa (`XAGUSDT`). Esistono anche coppie con entrambe le gambe su Aster (USDT contro USD1).
-
-## Changelog
-
-- **2026-10-16**: TP/SL automatici (`arb/protection.py`, `tp_sl` e `tp_sl_liq_fraction` in `[execution]`): due livelli comuni alle gambe, al 70% della distanza di liquidazione stimata. In `execute` sono negli ordini d'apertura, con verifica dopo l'apertura e cancellazione dei TP/SL rimasti dopo chiusure e chiusure di sicurezza. In `notify` sono nelle istruzioni. Messaggi di istruzioni e proposte riformattati in HTML Telegram.
-- **2026-10-16**: parser delle posizioni allineato al formato reale di `get_positions` (MET Hyperliquid/Lighter). Senza mark price, notional e distanza dalla liquidazione risultavano `null`: il monitor non dava mai l'allarme margine e le proposte di chiusura non avevano il prezzo di riferimento. Ora il mark si ricava da entrata e uPnL. Test con la risposta reale.
-- **2026-10-15**: primo uso reale. Hyperliquid e Lighter collegati con circa $58 ciascuno (Hyperliquid in `unifiedAccount`: lo spot USDC vale come margine). `[strategy]` adattato al capitale: 1 strategia, $100 per gamba. Parser dei saldi allineato al formato reale di `get_accounts`. Telegram verificato.
-- **2026-10-15**: controllo del capitale prima delle proposte di apertura (`arb/capital.py`, `get_accounts`): margine per venue con buffer del 10%, spostamenti suggeriti tra venue, nessuna proposta se mancano fondi. `arb execute` ricontrolla il margine. Nuovo comando `arb capital`, parametro `capital_buffer`.
-- **2026-10-15**: obiettivo minimo del 20% annuo netto sul capitale, leva inclusa (`min_apr_on_capital`, `leverage` in `[strategy]`). Nuovo campo `apr_on_capital` e flag `sotto obiettivo`. `arb portfolio` e `/ciclo` scartano le coppie sotto soglia. Sostituisce `min_net_horizon`.
-- **2026-10-15**: `TRADING_MODE` in `.env` (`notify` di default: istruzioni manuali con link all'Arbitrage Desk; `execute`: approvazione ed esecuzione). Comando di progetto `/ciclo` con la procedura del loop, regole `[strategy]` in config, `arb mode`, `arb daily`.
-- **2026-10-15**: permesso di progetto per `uv run arb *` (loop senza conferme in Claude Code).
-- **2026-10-15**: approvazione via Telegram ed esecuzione via MCP. Nuovi comandi: `arb propose` (proposta con pulsanti), `arb tg wait`/`poll`, `arb execute` (limiti `[execution]`, controllo dello scostamento, esecuzione a gambe con chiusura di sicurezza), `arb proposals`. Notional di default $1000 per gamba ($500 di margine × 2x).
-- **2026-10-15**: niente esecuzione automatica: Claude analizza e manda su Telegram cosa fare, l'utente esegue su VOOI. Nuovi comandi `arb plan` (piano d'ordine con size arrotondate e ordine delle gambe) e `arb tg` (invio Telegram).
-- **2026-10-15**: basis tra venue nel modello (atteso e pessimista) e snapshot dei prezzi a ogni scan per stimarne la media storica. Nuovo comando `arb portfolio` (capitale, leva, K strategie, rischio di liquidazione).
-- **2026-10-15**: config impostata su Hyperliquid + Lighter, $100 per gamba. Nuovi flag: `spread attuale negativo`, `orari limitati`, `stessa venue, sottostanti diversi`.
-- **2026-10-15**: scan riscritto. Storico per mercato in cache, spread di coppia calcolato in locale: niente più bias verso i picchi. Fee reali per mercato da `get_quotes` (Aster 6 bps, non 3.5). Storico di default a 30 giorni con `mean_all`/`pos_all` e flag `regime recente`. Nuovo comando `arb venues`, flag `--dex` e `--days`. Rimossi `min_apr` e `max_candidates`, sostituiti da `min_hist_apr`. Analisi delle venue on-chain: scelta Hyperliquid + Lighter.
-- **2026-10-15**: primo scan reale riuscito (client HTTP con token verificato, circa 25s per scan). Risolti gli asset ambigui su Aster (prima 7 coppie su XAU/XAG/CL venivano scartate). Orizzonte di default portato a 168h: a 72h quasi nessuna coppia HL/Aster copre i costi taker.
-- **2026-10-15**: prima versione. Client MCP HTTP, funnel di scan con metriche di durata e costi, monitor delle posizioni, journal SQLite, test offline su risposte reali (CHIP aster/hyperliquid).
+MIT. See [`LICENSE`](LICENSE).

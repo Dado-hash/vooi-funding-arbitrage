@@ -1,4 +1,4 @@
-"""Test offline su risposte MCP reali salvate in tests/fixtures."""
+"""Offline tests on real MCP responses saved in tests/fixtures."""
 
 import json
 from datetime import datetime, timedelta
@@ -33,7 +33,7 @@ def memory_db():
 
 
 class FakeClient:
-    """Storico per mercato: Hyperliquid = spread del grafico CHIP, Aster = 0, quindi spread coppia = grafico."""
+    """History per market: Hyperliquid = the CHIP chart spread, Aster = 0, so the pair spread = the chart."""
 
     def call(self, tool, args=None):
         if tool == "get_funding_rate_history":
@@ -71,8 +71,8 @@ def test_stats_capture_instability():
     s = spread_stats(chip_series())
     assert s.n_hours == 66
     assert s.now == pytest.approx(0.00003525)
-    assert s.streak_h == 3                 # ultime 3 ore positive
-    assert s.mean_24h < 0                  # nonostante APR attuale ~31%
+    assert s.streak_h == 3                 # last 3 hours positive
+    assert s.mean_24h < 0                  # despite the current APR of ~31%
     assert s.pos_72h < 0.5
     assert 0 <= s.phi <= 0.99
 
@@ -80,7 +80,7 @@ def test_stats_capture_instability():
 def test_forecast_reverts_to_mean():
     s = spread_stats(chip_series())
     naive = s.now * 72
-    assert expected_cum(s, 72) < naive     # il picco attuale non dura tutto l'orizzonte
+    assert expected_cum(s, 72) < naive     # the current peak does not last the whole horizon
     ev = evaluate(s, 72, cost_rt=0.0016)
     assert ev.net_blend < 0 and ev.score_apr < 0
 
@@ -91,14 +91,14 @@ def test_scan_pipeline_ranks_and_flags():
                                min_hist_apr=-1, horizon_h=72)
     result, strategies = run_scan(FakeClient(), cfg, p, memory_db())
     ids = [c["id"] for c in result["top"]]
-    assert "HYPE:robinhood>HYPE:aster" not in ids          # robinhood fuori dalle venue
+    assert "HYPE:robinhood>HYPE:aster" not in ids          # robinhood outside the venues
     assert "CHIP:aster>CHIP:hyperliquid" in ids
     chip = next(c for c in result["top"] if c["id"].startswith("CHIP"))
     assert chip["costs"]["slippage_rt"] > 0
-    assert chip["costs"]["basis_entry"] > 0                 # short HL quota sopra long Aster
-    assert any("24h negativo" in f for f in chip["flags"])
+    assert chip["costs"]["basis_entry"] > 0                 # short HL quoted above long Aster
+    assert any("negative 24h mean" in f for f in chip["flags"])
     assert chip["stats"]["n_hours"] == 66
-    assert chip["costs"]["fees_rt"] == pytest.approx(2 * (0.0006 + 0.00045))   # fee da get_quotes
+    assert chip["costs"]["fees_rt"] == pytest.approx(2 * (0.0006 + 0.00045))   # fees from get_quotes
     assert "CHIP:aster>CHIP:hyperliquid" in render_table(result)
 
 
@@ -126,7 +126,7 @@ def test_pairing_positions():
 
 
 def test_real_positions_mark_and_liq_distance():
-    """Formato reale di VOOI: niente mark price, si ricava da entrata e uPnL."""
+    """Real VOOI format: no mark price, it is derived from entry price and uPnL."""
     from arb.monitor import _liq_distance
 
     pairs, unmatched = group_pairs([normalize_position(p) for p in load("positions.json")])
@@ -149,8 +149,8 @@ def test_plan_same_size_and_thin_book_first():
     lighter = {"exchange": "lighter", "baseSymbol": "MET", "quoteSymbol": "USDC", "price": "0.3748",
                "baseDecimals": 1, "maxLeverage": 5, "volume24h": 200_000}
     plan = build_plan(hl, lighter, notional=450, leverage=2)
-    assert plan["size"] == 1201                      # floor(450 / 0.37465), decimali comuni = 0
-    assert plan["order"][0]["exchange"] == "lighter"  # volume più basso: prima
+    assert plan["size"] == 1201                      # floor(450 / 0.37465), common decimals = 0
+    assert plan["order"][0]["exchange"] == "lighter"  # lower volume: first
     assert plan["order"][0]["side"] == "SELL"
     assert not plan["problems"]
     assert build_plan(hl, lighter, 450, leverage=4)["problems"]
@@ -159,7 +159,7 @@ def test_plan_same_size_and_thin_book_first():
 def test_telegram_chunks():
     from arb.telegram import chunks
 
-    text = "\n".join(f"riga {i}" for i in range(2000))
+    text = "\n".join(f"line {i}" for i in range(2000))
     parts = chunks(text, size=500)
     assert "".join(parts) == text and all(len(p) <= 500 for p in parts)
 
@@ -167,6 +167,6 @@ def test_telegram_chunks():
 def test_apr_on_capital_includes_leverage():
     from arb.scan import apr_on_capital
 
-    # 0.5% netto in 7 giorni per gamba: a 2x il capitale è 1× il notional per gamba → ~26% annuo
+    # 0.5% net in 7 days per leg: at 2x the capital is 1x the notional per leg → ~26% per year
     assert apr_on_capital(0.005, 168, 2) == pytest.approx(0.005 * 8760 / 168)
     assert apr_on_capital(0.005, 168, 4) == pytest.approx(2 * apr_on_capital(0.005, 168, 2))

@@ -1,4 +1,4 @@
-"""Persistenza locale (SQLite in data/arb.db): scan, snapshot dello spread, journal posizioni."""
+"""Local persistence (SQLite in data/arb.db): scans, spread snapshots, position journal."""
 
 import json
 import sqlite3
@@ -41,7 +41,7 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DATA_DIR / "arb.db")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    from .approvals import init  # import locale: approvals importa store
+    from .approvals import init  # local import: approvals imports store
 
     init(conn)
     return conn
@@ -77,7 +77,7 @@ def save_prices(conn, ts: str, markets: dict) -> None:
 
 
 def basis_mean(conn, long_leg: tuple, short_leg: tuple, min_points: int = 24) -> tuple[float | None, int]:
-    """Media storica del basis (short − long)/mid dagli snapshot di prezzo presi nello stesso scan."""
+    """Historical mean basis (short − long)/mid from price snapshots taken in the same scan."""
     rows = conn.execute(
         """SELECT l.price AS lp, s.price AS sp FROM price_snapshots l
            JOIN price_snapshots s ON s.ts = l.ts AND s.exchange = ? AND s.asset = ? AND s.quote = ?

@@ -1,8 +1,8 @@
-"""Controllo delle posizioni aperte: accoppia le gambe, valuta rischio e spread, propone azioni.
+"""Open position check: pairs the legs, assesses risk and spread, suggests actions.
 
-`normalize_position` prova più nomi di campo e conserva sempre il record grezzo in `raw`.
-Formato reale di VOOI (Hyperliquid e Lighter) in `tests/fixtures/positions.json`: niente mark price,
-che si ricava da prezzo d'entrata e uPnL.
+`normalize_position` tries several field names and always keeps the raw record in `raw`.
+Real VOOI format (Hyperliquid and Lighter) in `tests/fixtures/positions.json`: there is no mark
+price, so it is derived from entry price and uPnL.
 """
 
 from collections import defaultdict
@@ -14,7 +14,7 @@ from .metrics import expected_cum, spread_stats
 from .scan import spread_chart
 from .store import journal_list, last_scan, now_iso
 
-LEVELS = ["OK", "INFO", "ATTENZIONE", "AZIONE"]
+LEVELS = ["OK", "INFO", "WARNING", "ACTION"]
 
 
 def _first(d: dict, *keys):
@@ -44,7 +44,7 @@ def normalize_position(p: dict) -> dict:
     upnl = _num(_first(p, "unrealizedPnl", "unrealizedPnL", "pnl", "upnl"))
     mark = _num(_first(p, "markPrice", "price", "lastPrice"))
     if mark is None and entry and upnl is not None and size and side in ("long", "short"):
-        # VOOI non espone il mark: si ricava da uPnL = (mark − entrata) × size con segno.
+        # VOOI does not expose the mark: derive it from uPnL = (mark − entry) × signed size.
         mark = entry + upnl / (abs(size) if side == "long" else -abs(size))
     notional = _num(_first(p, "notional", "positionValue", "notionalUsd", "value"))
     if notional is None and size is not None and mark is not None:
@@ -74,7 +74,7 @@ def fetch_positions(client: VooiClient) -> list[dict]:
 
 
 def _asset_key(symbol: str) -> str:
-    """Chiave di accoppiamento: toglie prefissi HIP-3 (`xyz:`) e suffissi stable (`USDT`)."""
+    """Pairing key: strips HIP-3 prefixes (`xyz:`) and stablecoin suffixes (`USDT`)."""
     s = symbol.split(":")[-1].upper()
     for q in ("USDT", "USDC", "USD"):
         if s.endswith(q) and len(s) > len(q):
@@ -119,19 +119,19 @@ def assess_pair(client: VooiClient, cfg: dict, pair: dict, best: dict | None) ->
         d = _liq_distance(leg)
         leg["liq_distance"] = d
         if d is not None and d < mcfg.get("min_liq_distance", 0.15):
-            actions.append(("AZIONE", f"margine: {leg['exchange']} a {d:.1%} dalla liquidazione"))
+            actions.append(("ACTION", f"margin: {leg['exchange']} {d:.1%} from liquidation"))
 
     imbalance = None
     if l["notional"] and s["notional"]:
         imbalance = (l["notional"] - s["notional"]) / ((l["notional"] + s["notional"]) / 2)
         if abs(imbalance) > mcfg.get("max_imbalance", 0.05):
-            actions.append(("AZIONE", f"ribilancia: delta {imbalance:+.1%} (long vs short)"))
+            actions.append(("ACTION", f"rebalance: delta {imbalance:+.1%} (long vs short)"))
 
     stats = None
     try:
         stats = spread_stats(_spread_series(client, pair))
     except MCPError as e:
-        actions.append(("ATTENZIONE", f"storico spread non disponibile: {e}"))
+        actions.append(("WARNING", f"spread history unavailable: {e}"))
 
     exit_cost = taker_fee(cfg, l["exchange"]) + taker_fee(cfg, s["exchange"])
     hold_look = hold_h = None
@@ -139,18 +139,18 @@ def assess_pair(client: VooiClient, cfg: dict, pair: dict, best: dict | None) ->
         hold_look = expected_cum(stats, look)
         hold_h = expected_cum(stats, horizon)
         if hold_look < -exit_cost:
-            actions.append(("AZIONE", f"esci: spread atteso {look}h {hold_look:+.3%} peggiore del costo di uscita {exit_cost:.3%}"))
+            actions.append(("ACTION", f"exit: expected spread over {look}h {hold_look:+.3%} worse than exit cost {exit_cost:.3%}"))
         elif stats.mean_24h < 0:
-            actions.append(("ATTENZIONE", f"spread medio 24h negativo ({stats.mean_24h * 8760:+.0%} APR)"))
+            actions.append(("WARNING", f"negative 24h mean spread ({stats.mean_24h * 8760:+.0%} APR)"))
         elif stats.now < 0:
-            actions.append(("INFO", "spread dell'ultima ora negativo"))
+            actions.append(("INFO", "negative spread in the last hour"))
 
         if best and best.get("id") and hold_h is not None:
             switch = best["eval"]["net_exp"] - exit_cost
             uplift = mcfg.get("rotate_min_uplift", 0.5)
             if switch > 0 and switch > max(hold_h, 0) * (1 + uplift):
-                actions.append(("ATTENZIONE",
-                                 f"valuta rotazione su {best['id']}: atteso {switch:+.3%} vs hold {hold_h:+.3%} su {horizon}h"))
+                actions.append(("WARNING",
+                                 f"consider rotation to {best['id']}: expected {switch:+.3%} vs hold {hold_h:+.3%} over {horizon}h"))
 
     status = max((a[0] for a in actions), key=LEVELS.index, default="OK")
     return {
@@ -180,18 +180,18 @@ def run_monitor(client: VooiClient, cfg: dict, conn) -> dict:
         best = next((c for c in scan["top"] if c["id"] not in held and not c.get("flags")), None)
 
     assessed = [assess_pair(client, cfg, p, best) for p in pairs]
-    alerts = [f"[AZIONE] gamba scoperta: {p['side']} {p['symbol']} su {p['exchange']}" for p in unmatched]
+    alerts = [f"[ACTION] unhedged leg: {p['side']} {p['symbol']} on {p['exchange']}" for p in unmatched]
 
     open_journal = journal_list(conn, open_only=True)
     live_ids = {a["id"] for a in assessed}
     for j in open_journal:
         jid = f"{j['long_sym']}:{j['long_ex']}>{j['short_sym']}:{j['short_ex']}"
         if jid not in live_ids:
-            alerts.append(f"[ATTENZIONE] journal #{j['id']} {jid} aperto ma posizioni assenti (chiusa o liquidata?)")
+            alerts.append(f"[WARNING] journal #{j['id']} {jid} open but positions missing (closed or liquidated?)")
     journal_ids = {f"{j['long_sym']}:{j['long_ex']}>{j['short_sym']}:{j['short_ex']}" for j in open_journal}
     for a in assessed:
         if a["id"] not in journal_ids:
-            alerts.append(f"[INFO] {a['id']} non registrata nel journal")
+            alerts.append(f"[INFO] {a['id']} not in the journal")
 
     return {
         "ts": now_iso(),
@@ -204,11 +204,11 @@ def run_monitor(client: VooiClient, cfg: dict, conn) -> dict:
 
 
 def render_report(r: dict) -> str:
-    lines = [f"monitor {r['ts']} · {r['n_positions']} posizioni · {len(r['pairs'])} coppie"]
+    lines = [f"monitor {r['ts']} · {r['n_positions']} positions · {len(r['pairs'])} pairs"]
     if r["scan_age_h"] is None:
-        lines.append("nessuno scan salvato: esegui `arb scan` per i confronti di rotazione")
+        lines.append("no saved scan: run `arb scan` for rotation comparisons")
     elif r["scan_age_h"] > 6:
-        lines.append(f"ultimo scan vecchio di {r['scan_age_h']:.1f}h: riesegui `arb scan`")
+        lines.append(f"last scan is {r['scan_age_h']:.1f}h old: rerun `arb scan`")
     for a in r["pairs"]:
         sp = a["spread"] or {}
         lines.append(

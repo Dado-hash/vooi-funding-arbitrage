@@ -1,23 +1,23 @@
-# Parametri di default. I flag della CLI hanno la precedenza.
+# Default parameters. CLI flags take precedence.
 
 [scan]
-venues = ["hyperliquid", "lighter"] # [] = tutte le venue. Scelte con `arb venues` il 2026-10-15
-both_legs = true                    # entrambe le gambe devono stare in `venues` (come la UI VOOI)
-notional_usd = 1000                 # notional per gamba: $500 di margine per venue × leva 2x
-horizon_h = 168                     # orizzonte di holding (7 giorni): con fee taker, 72h non bastano a coprire i costi
-min_hist_apr = 0.05                 # APR medio 7d minimo per entrare in classifica (0.05 = 5%)
-min_volume_usd = 100000             # volume 24h minimo della strategia (somma gambe)
-min_oi_usd = 50000                  # open interest minimo per gamba
-deep = 15                           # coppie su cui calcolare slippage e costi reali
-history_days = 30                   # storico per le metriche di persistenza (pos_all, mean_all); le finestre 24h/72h/7d restano
+venues = ["hyperliquid", "lighter"] # [] = all venues. Chosen with `arb venues` on 2026-10-15
+both_legs = true                    # both legs must be in `venues` (as in the VOOI UI)
+notional_usd = 1000                 # notional per leg: $500 margin per venue × 2x leverage
+horizon_h = 168                     # holding horizon (7 days): with taker fees, 72h is not enough to cover costs
+min_hist_apr = 0.05                 # minimum 7d mean APR to make the ranking (0.05 = 5%)
+min_volume_usd = 100000             # minimum 24h volume of the strategy (sum of legs)
+min_oi_usd = 50000                  # minimum open interest per leg
+deep = 15                           # pairs for which slippage and real costs are computed
+history_days = 30                   # history for persistence metrics (pos_all, mean_all); the 24h/72h/7d windows stay
 
-# Venue on-chain (registrazione con firma wallet, nessuna API key). `arb scan --dex`.
+# On-chain venues (registration with wallet signature, no API key). `arb scan --dex`.
 [venues]
 dex = ["hyperliquid", "lighter", "aster", "extended", "ondo", "robinhood"]
 
-# Fee taker per venue, in frazione (0.00045 = 4.5 bps). Valori da `get_quotes` (feesBps) il 2026-10-15,
-# fee VOOI incluse. Servono solo come stima nello stadio 2: lo stadio 3 legge le fee reali del singolo
-# mercato da `get_quotes` (i mercati HIP-3 possono avere fee diverse).
+# Taker fee per venue, as a fraction (0.00045 = 4.5 bps). Values from `get_quotes` (feesBps) on 2026-10-15,
+# VOOI fees included. Only used as an estimate in stage 2: stage 3 reads the real fees of the single
+# market from `get_quotes` (HIP-3 markets may have different fees).
 [fees.taker]
 hyperliquid = 0.00045
 lighter = 0.00025
@@ -30,28 +30,29 @@ bybit = 0.00055
 mexc = 0.0002
 gate = 0.0005
 
-# Limiti di `arb execute`, controllati su ogni proposta approvata indipendentemente da cosa contiene.
+# Limits for `arb execute`, checked on every approved proposal regardless of its contents.
 [execution]
 venues = ["hyperliquid", "lighter"]
 max_notional_per_leg = 1000        # USD
 max_leverage = 2
-max_price_drift = 0.01             # scostamento massimo del prezzo dal riferimento della proposta
-max_basis_worsening = 0.002        # peggioramento massimo del basis (20 bps) prima di riproporre
-proposal_ttl_min = 15              # validità di una proposta: dopo, l'approvazione non vale più
-tp_sl = true                       # TP/SL negli ordini d'apertura (e nelle istruzioni notify)
-tp_sl_liq_fraction = 0.7           # livelli al 70% della distanza di liquidazione stimata (isolated)
+max_price_drift = 0.01             # maximum price move from the proposal's reference price
+max_basis_worsening = 0.002        # maximum basis worsening (20 bps) before re-proposing
+proposal_ttl_min = 15              # proposal validity: after that, the approval no longer counts
+tp_sl = true                       # TP/SL on the opening orders (and in the notify instructions)
+tp_sl_liq_fraction = 0.7           # levels at 70% of the estimated (isolated) liquidation distance
 
-# Regole del ciclo di monitoraggio (.claude/skills/ciclo/SKILL.md)
+# Rules for the monitoring cycle (see docs/cycle.md)
+# Example values for about $120 total capital: one strategy, $100 per leg.
 [strategy]
-max_strategies = 1                 # strategie in parallelo (capitale attuale ~$116: una sola)
-notional_per_strategy = 100        # USD per gamba: con ~$58 per venue a 2x (margine $50 + buffer 10%)
-leverage = 2                       # leva usata su entrambe le gambe
-min_apr_on_capital = 0.20          # rendimento netto annualizzato minimo sul capitale impegnato (margine), leva inclusa
-max_breakeven_h = 72               # ore massime per coprire i costi
-capital_buffer = 0.10              # margine extra richiesto per venue oltre notional/leva (fee, oscillazioni)
+max_strategies = 1                 # strategies in parallel (one at this capital size)
+notional_per_strategy = 100        # USD per leg: with ~$58 per venue at 2x (margin $50 + 10% buffer)
+leverage = 2                       # leverage used on both legs
+min_apr_on_capital = 0.20          # minimum net annualized return on committed capital (margin), leverage included
+max_breakeven_h = 72               # maximum hours to cover costs
+capital_buffer = 0.10              # extra margin required per venue beyond notional/leverage (fees, swings)
 
 [monitor]
-min_liq_distance = 0.15     # sotto questa distanza dal prezzo di liquidazione: allarme margine
-max_imbalance = 0.05        # sbilanciamento notional long/short tollerato
-exit_lookahead_h = 24       # finestra su cui valutare se lo spread previsto resta positivo
-rotate_min_uplift = 0.5     # ruota solo se il guadagno netto atteso migliora di almeno +50%
+min_liq_distance = 0.15     # below this distance from the liquidation price: margin alarm
+max_imbalance = 0.05        # tolerated long/short notional imbalance
+exit_lookahead_h = 24       # window over which to check whether the expected spread stays positive
+rotate_min_uplift = 0.5     # rotate only if the expected net gain improves by at least +50%
