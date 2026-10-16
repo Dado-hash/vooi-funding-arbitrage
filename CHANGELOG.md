@@ -2,6 +2,7 @@
 
 Newest first. Dates are when the change was made.
 
+- **2026-10-16**: Daily summary built by code (`arb/summary.py`, `arb daily --send [--note]`, `--show`): Telegram HTML with status icons, positions, spreads, balances and the top 3 opportunities; the agent only adds an optional note. README shortened and redesigned (badges, features, diagram, agent table); details moved to `docs/strategy.md`, `docs/execution.md`, `docs/agents.md` and `docs/cli.md`.
 - **2026-10-16**: Open-source preparation: all code, docs and messages translated to English; agent-neutral setup (`AGENTS.md` as the canonical instructions, `docs/cycle.md` as the monitoring procedure, `scripts/run-cycle.sh` for headless runs); `.claude/skills/cycle` replaces `ciclo`; MIT license; CI test workflow.
 - **2026-10-16**: Automatic TP/SL protection (`arb/protection.py`, `tp_sl` and `tp_sl_liq_fraction` in `[execution]`): two shared price levels for both legs, at 70% of the estimated liquidation distance. In `execute` they are attached to the opening orders, verified after opening, and leftover TP/SL are cancelled after closes and safety closes. In `notify` they appear in the instructions. Instruction and proposal messages reformatted as Telegram HTML.
 - **2026-10-16**: Position parser aligned with the real `get_positions` format. Without a mark price, notional and liquidation distance were `null`: the monitor never raised a margin alarm and close proposals had no reference price. The mark is now derived from entry price and uPnL. Tested against a real response.

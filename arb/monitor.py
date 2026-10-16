@@ -160,6 +160,7 @@ def assess_pair(client: VooiClient, cfg: dict, pair: dict, best: dict | None) ->
         "actions": [f"[{lvl}] {msg}" for lvl, msg in actions],
         "imbalance": imbalance,
         "notional": {"long": l["notional"], "short": s["notional"]},
+        "leverage": l.get("leverage") or s.get("leverage"),
         "liq_distance": {"long": l.get("liq_distance"), "short": s.get("liq_distance")},
         "upnl": (l["upnl"] or 0) + (s["upnl"] or 0),
         "funding_collected": (l["funding_fee"] or 0) + (s["funding_fee"] or 0),
