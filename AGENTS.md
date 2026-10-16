@@ -50,13 +50,13 @@ Execution checks the `[execution]` limits in `config.toml` (venues, notional per
 
 ## Monitoring loop
 
-The procedure for one monitoring run is in **`docs/cycle.md`**. Read it at the start of every run and follow it exactly. In Claude Code it is run with `/loop 1h /cycle`; other agents run it via `scripts/run-cycle.sh` (see `README.md`, section "Running the monitoring loop").
+The procedure for one monitoring run is in **`docs/cycle.md`**. Read it at the start of every run and follow it exactly. In Claude Code it is run with `/loop 1h /cycle`; other agents run it via `scripts/run-cycle.sh` (see `docs/agents.md`).
 
 ## Contributing to the code
 
 - Code, comments, messages and docs are in **English**.
 - Keep behavior, thresholds and numeric defaults unchanged unless the change is intentional.
 - After any code change, run `uv run pytest -q` and make sure everything passes.
-- After any change to code, parameters or analysis method, update `README.md` (relevant sections) and add a dated entry to `CHANGELOG.md`.
+- After any change to code, parameters or analysis method, update the relevant page (`README.md` or `docs/`) and add a dated entry to `CHANGELOG.md`.
 - Never commit `.env`, `data/`, or `.claude/settings.local.json`.
 - Tests run offline on saved real MCP responses in `tests/fixtures/`. Do not add tests that need network access or real credentials.

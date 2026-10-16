@@ -1,6 +1,6 @@
 # Monitoring cycle
 
-This is the procedure for one run of the VOOI funding-arbitrage monitoring loop. It is written for any coding agent (Claude Code, Codex, Gemini CLI, Cursor, ...). Work in the project folder. Use only `uv run arb …` commands. For full context and the meaning of the metrics, read `README.md`. Parameters: `config.toml` (`[strategy]`, `[execution]`, `[monitor]`).
+This is the procedure for one run of the VOOI funding-arbitrage monitoring loop. It is written for any coding agent (Claude Code, Codex, Gemini CLI, Cursor, ...). Work in the project folder. Use only `uv run arb …` commands. For the meaning of the metrics and flags, read `docs/strategy.md`; for execution and approvals, `docs/execution.md`. Parameters: `config.toml` (`[strategy]`, `[execution]`, `[monitor]`).
 
 ## Fixed rules
 
@@ -51,13 +51,9 @@ This is the procedure for one run of the VOOI funding-arbitrage monitoring loop.
    - At most one new opening per cycle. If no pair reaches the target, do not open: staying liquid is fine.
 
 5. **Daily summary**
-   - `uv run arb daily`. If it prints `due`, send with `uv run arb tg send` a summary with:
-     - open positions;
-     - balances per venue (`uv run arb capital`);
-     - funding collected and uPnL;
-     - current spreads versus the entry spreads;
-     - the top 3 opportunities from the scan.
-   - Then `uv run arb daily --mark`.
+   - `uv run arb daily`. If it prints `due`, run `uv run arb daily --send --note "<one short sentence>"`.
+     - The code builds and formats the summary (positions, spreads, balances, top 3 opportunities) and marks it sent. Do **not** write the summary yourself with `arb tg send`.
+     - The note is optional: one sentence with your judgement, e.g. "Spread cooling from 78% to 26% APR; still above exit cost." Leave it out if there is nothing to add.
 
 6. **Silence** if no step produced anything: no message.
 

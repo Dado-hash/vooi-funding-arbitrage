@@ -255,13 +255,29 @@ def cmd_journal(args, cfg, client) -> None:
 
 
 def cmd_daily(args, cfg, client) -> None:
-    """Daily summary: `due` if today (local time) has not been sent yet and it is past 9:00."""
+    """Daily summary: `due` if today (local time) has not been sent yet and it is past 9:00.
+    `--send` builds the summary, sends it and marks it sent; `--show` only prints it."""
     from datetime import datetime
 
     conn = store.connect()
     today = datetime.now().date().isoformat()
     row = conn.execute("SELECT value FROM kv WHERE key = 'daily_sent'").fetchone()
-    if args.mark:
+    if args.send or args.show:
+        from .capital import fetch_balances
+        from .monitor import run_monitor
+        from .summary import build_daily
+        from .telegram import plain, send
+
+        client = VooiClient()
+        text = build_daily(run_monitor(client, cfg, conn), fetch_balances(client), store.last_scan(conn),
+                           cfg.get("scan", {}).get("horizon_h", 168), note=args.note)
+        print(plain(text))
+        if args.send:
+            send(text, as_html=True)
+            conn.execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('daily_sent', ?)", (today,))
+            conn.commit()
+            print("\nsent and marked")
+    elif args.mark:
         conn.execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('daily_sent', ?)", (today,))
         conn.commit()
         print("marked")
@@ -334,6 +350,9 @@ def main() -> None:
     cp.add_argument("--json", action="store_true")
     da = sub.add_parser("daily", help="daily summary: due? (--mark after sending)")
     da.add_argument("--mark", action="store_true")
+    da.add_argument("--send", action="store_true", help="build the summary, send it to Telegram and mark it sent")
+    da.add_argument("--show", action="store_true", help="build the summary and print it, without sending")
+    da.add_argument("--note", default="", help="optional one-line comment from the agent, shown under the headline")
 
     pls = sub.add_parser("proposals", help="list proposals")
     pls.add_argument("--status", choices=["pending", "notified", "approved", "rejected", "expired", "stale", "executed", "failed"])

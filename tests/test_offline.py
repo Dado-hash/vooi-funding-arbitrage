@@ -170,3 +170,42 @@ def test_apr_on_capital_includes_leverage():
     # 0.5% net in 7 days per leg: at 2x the capital is 1x the notional per leg → ~26% per year
     assert apr_on_capital(0.005, 168, 2) == pytest.approx(0.005 * 8760 / 168)
     assert apr_on_capital(0.005, 168, 4) == pytest.approx(2 * apr_on_capital(0.005, 168, 2))
+
+
+def test_daily_summary_layout():
+    from datetime import datetime
+
+    from arb.summary import build_daily
+
+    report = {
+        "pairs": [{
+            "id": "MET:hyperliquid>MET:lighter", "status": "OK", "actions": [], "leverage": 2.0,
+            "notional": {"long": 107.49, "short": 107.59}, "liq_distance": {"long": 0.42, "short": 0.39},
+            "upnl": -0.17, "funding_collected": 0.04,
+            "spread": {"now": 1.0e-4, "mean_24h": 3.0e-5, "mean_72h": 8.9e-5, "mean_7d": 6.4e-5},
+            "expected_next": {"24h": 0.0017, "168h": 0.0127},
+        }],
+        "alerts": ["[INFO] MET:hyperliquid>MET:lighter not in the journal"],
+    }
+    balances = {"hyperliquid": {"equity": 55.13, "available": 1.66}, "lighter": {"equity": 60.91, "available": 5.95}}
+    held = {"id": "MET:hyperliquid>MET:lighter", "long": {"symbol": "MET"}, "short": {"symbol": "MET"},
+            "apr_on_capital": 0.25, "eval": {"breakeven_h": 55, "net_blend": 0.01}, "flags": []}
+    hip3 = {"id": "xyz:SMSN:hyperliquid>SMSN:lighter", "long": {"symbol": "xyz:SMSN"}, "short": {"symbol": "SMSN"},
+            "apr_on_capital": 0.17, "eval": {"breakeven_h": 40, "net_blend": 0.01}, "flags": ["below target: 17%"]}
+    low = {"id": "XPL:lighter>XPL:hyperliquid", "long": {"symbol": "XPL"}, "short": {"symbol": "XPL"},
+           "apr_on_capital": 0.08, "eval": {"breakeven_h": 90, "net_blend": 0.001},
+           "flags": ["below target: 8% on capital (min 20%)"]}
+    text = build_daily(report, balances, {"top": [held, hip3, low]}, 168, note="Spread cooling.",
+                       now=datetime(2026, 10, 16, 9, 5))
+    assert text.startswith("☀️ <b>Daily summary</b> · Fri 16 Oct")
+    assert "✅ <b>No action.</b> Keep holding." in text and "<i>Spread cooling.</i>" in text
+    assert "🟢 <b>MET</b> · long Hyperliquid / short Lighter" in text
+    assert "liq <code>42%</code> / <code>39%</code> away" in text
+    assert "Funding <code>+$0.04</code> · uPnL <code>−$0.17</code>" in text
+    assert "Expected next 7d: <b>+1.3%</b> of notional (~+$1.37)" in text
+    assert "Total <code>$116.04</code>" in text
+    assert "not in the journal" not in text                      # INFO alerts stay out of the summary
+    assert "<i>held</i>" in text and "<i>HIP-3</i>" in text and "<i>below target</i>" in text
+
+    report["pairs"][0]["status"] = "ACTION"
+    assert "🔴 <b>Action needed</b>" in build_daily(report, balances, None, 168)

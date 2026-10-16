@@ -6,7 +6,7 @@
 #   ARB_AGENT_CMD="gemini -p"  scripts/run-cycle.sh
 #
 # The agent command receives the prompt as its last argument. The headless agent must be allowed to
-# run `uv run arb ...` without asking for confirmation (see README, "Running the monitoring loop").
+# run `uv run arb ...` without asking for confirmation (see docs/agents.md, "Permissions").
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
