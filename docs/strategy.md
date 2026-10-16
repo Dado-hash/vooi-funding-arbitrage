@@ -20,7 +20,7 @@ How `arb` finds, scores and sizes funding-arbitrage pairs. Back to the [README](
 3. **Ranking**: only pairs with a 7-day mean APR ≥ `min_hist_apr` enter, sorted by `score` using the configured fees.
 4. **Real costs**: for the top `deep` pairs:
    - `get_markets` (one paginated call per venue) for price, OI, interval and next settlement;
-   - `estimate_slippage` for slippage and fill;
+   - `estimate_slippage` for the price impact and fill of each leg, on both sides: entry (long buys, short sells) and exit (long sells, short buys), at `notional_usd`;
    - `get_quotes` for the real fees of the single market (`feesBps`, VOOI fees included).
 
 A first scan of all DEX venues takes about 3 minutes, because it downloads 30 days of history for about 740 markets. Later scans only update the latest hours.
@@ -38,14 +38,15 @@ Spread = `short_rate − long_rate`, hourly. Returns are a fraction of the notio
 | `hl` | Half-life: hours for the current deviation from the mean to halve (from `phi`, lag-1 autocorrelation). Low = short-lived spike |
 | `exp` | Expected funding over the horizon with an AR(1) model (the spread starts at the current value and reverts toward the mean: 50% 72h + 50% 7d), plus the expected basis P&L |
 | `cons` | Pessimistic scenario: the lowest mean among 24h, 72h and 7d held for the whole horizon, plus the pessimistic basis P&L |
-| `cost` | Round-trip costs: taker fee × 2 legs × (entry + exit) + slippage × 2 |
+| `cost` | Round-trip costs: taker fee × 2 legs × (entry + exit) + price impact of entry and exit on both legs, at `notional_usd` |
 | `net` | `(exp + cons)/2 − cost`, i.e. the expected net return |
 | `score` | `net` annualized over the horizon. **This is the ranking metric** |
 | `BE` | Holding hours needed to cover the costs |
 | `APR30` / `pos_all` (JSON: `mean_all`, `pos_all`) | Mean and share of positive hours over the whole history (`history_days`, default 30): separates a structural spread from a recent regime |
 | `apr_on_capital` | Net annualized return on committed capital, leverage included: `net × leverage/2 × 8760/horizon`. Total margin is 2 legs × notional / leverage, so at 2x it equals the per-leg net. **Minimum target: 20%** (`min_apr_on_capital`) |
 | `roi_on_margin` | `net` × common leverage ÷ 2: return on the total margin of both legs |
-| `basis_entry` | `(short price − long price)/mid` at entry. Positive = favorable |
+| `basis_entry` | `(short price − long price)/mid` at entry, from market prices. Positive = favorable |
+| `basis_at_size` | Same, from the executable average prices of the entry orders at `notional_usd` (`estimate_slippage`). This is the basis you actually get |
 | `basis_mean` | Historical mean basis from price snapshots (`price_snapshots`, one per scan). Used from 24 snapshots onward |
 
 ## Basis
@@ -55,6 +56,8 @@ The price P&L of a pair is `b₀ − b_exit`, with b = (short price − long pri
 - **expected**: with history, `b₀ − basis_mean` (the pair returns to its normal level). Without history, `b₀ × 0.5` (partial convergence toward zero);
 - **pessimistic**: an unfavorable basis converges (a loss), a favorable one persists (zero gain).
 
+`basis_at_size` uses the average execution prices of the entry orders instead of the market prices, so it includes the price impact. A basis below −20 bps at size is flagged `unfavorable basis at size`.
+
 Every scan stores the prices of all markets on the configured venues, so the estimate of the normal basis improves over time. On liquid Hyperliquid/Lighter pairs the entry basis is typically 5-15 bps: small compared to weekly funding, but comparable to the fees.
 
 ## Flags
@@ -63,6 +66,7 @@ Every scan stores the prices of all markets on the configured venues, so the est
 |---|---|---|
 | `costs not covered within the horizon` | Break-even beyond the horizon | ✅ |
 | `thin book on <ex> (N% filled)` | Slippage estimate could not fill the notional | ✅ |
+| `high price impact on <ex> (N bps entry\|exit)` | Worst of the entry and exit impact of a leg is above `max_impact_bps` (25) | ✅ |
 | `negative 24h mean spread` | Paying funding on average over the last day | ✅ |
 | `unstable: positive X% of hours over 72h` | `pos72` < 60% | ✅ |
 | `cost analysis failed: ...` | Stage 4 errored | ✅ |
@@ -74,9 +78,10 @@ Every scan stores the prices of all markets on the configured venues, so the est
 | `spike: current spread >3x the 7d mean` | | |
 | `short history (Nh)` | Less than 72 hours of data | |
 | `low OI on <ex>` | Open interest under `min_oi_usd` | |
-| `slippage not estimated on <ex>` / `high slippage on <ex>` | Over 15 bps | |
+| `slippage not estimated on <ex>` / `exit impact not estimated on <ex>` | `estimate_slippage` failed for the entry or exit side | |
+| `unfavorable basis at size (X%)` | `basis_at_size` below −20 bps | |
 | `settlement on <ex> ...` | 4h/8h venue with the next payment within 60 minutes | |
-| `unfavorable entry basis` | Entry basis below −20 bps | |
+| `unfavorable entry basis` | Entry basis (market prices) below −20 bps | |
 
 ## Venue comparison
 
@@ -94,7 +99,7 @@ Every scan stores the prices of all markets on the configured venues, so the est
 
 ## Portfolio sizing
 
-`arb portfolio` splits the capital equally across the venues. The maximum notional per venue is `margin × leverage × utilization` (default utilization 90%, leaving a buffer for fees and P&L). With K strategies each leg is worth `maximum notional / K`.
+`arb portfolio` splits the capital equally across the venues. Without `--capital` it uses the equity reported by `get_accounts` on the configured venues. The maximum notional per venue is `margin × leverage × utilization` (default utilization 90%, leaving a buffer for fees and P&L). With K strategies each leg is worth `maximum notional / K`.
 
 Candidates are valid pairs without the flags `negative current spread`, `same venue`, `limited hours` or `below target`, and whose common maximum leverage is ≥ the chosen leverage. Risk measures:
 
@@ -131,7 +136,7 @@ K=1 is all MET, a recent regime. K=2 adds SAMSUNG: lower return, much lower risk
 ## Known limitations
 
 - The fees in `config.toml` come from `get_quotes` without connected exchanges. With a connected account the tier may differ; stage 4 still uses `get_quotes`.
-- Exit slippage is assumed equal to entry slippage. The basis does not enter the score.
+- The basis does not enter the score (only the costs and the flags do).
 - Spread history on venues with 4h/8h funding is a step function, so `phi` comes out higher.
 - Costs assume taker orders, by design: no limit orders, so that one leg is never filled alone.
 - Bridge and collateral transfer costs between venues are not included.

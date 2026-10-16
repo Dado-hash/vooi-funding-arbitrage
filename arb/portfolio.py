@@ -101,7 +101,8 @@ def simulate(client, cfg: dict, conn, p_base: ScanParams, capital: float, levera
 def render(sim: dict) -> str:
     pr = sim["params"]
     lines = [
-        f"portfolio ${pr['capital']:.0f} · ${pr['margin_per_venue']:.0f} per venue · leverage {pr['leverage']:g}x · "
+        f"portfolio ${pr['capital']:.0f} from {pr.get('capital_source', '--capital')} · "
+        f"${pr['margin_per_venue']:.0f} per venue · leverage {pr['leverage']:g}x · "
         f"utilization {pr['utilization']:.0%}, max ${pr['leg_capacity']:.0f} notional per venue · "
         f"horizon {pr['horizon_h']:.0f}h",
         f"valid candidates: {len(sim['pool'])}",

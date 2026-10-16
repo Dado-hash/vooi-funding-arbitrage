@@ -8,8 +8,10 @@ import sqlite3
 
 import pytest
 
+import copy
+
 from arb import store
-from arb.config import load_config
+from arb.config import load_config, taker_fee
 from arb.metrics import evaluate, expected_cum, spread_stats
 from arb.monitor import group_pairs, normalize_position
 from arb.scan import ScanParams, render_table, run_scan
@@ -102,6 +104,50 @@ def test_scan_pipeline_ranks_and_flags():
     assert "CHIP:aster>CHIP:hyperliquid" in render_table(result)
 
 
+def _chip_pair(result):
+    return next(c for c in result["top"] if c["id"] == "CHIP:aster>CHIP:hyperliquid")
+
+
+def test_scan_slippage_covers_entry_and_exit_sides():
+    cfg = load_config()
+    p = ScanParams.from_config(cfg, venues=["hyperliquid", "aster"], min_volume_usd=0, min_hist_apr=-1,
+                               horizon_h=72)
+    result, _ = run_scan(FakeClient(), cfg, p, memory_db())
+    chip = _chip_pair(result)
+    # the fixture answers 4.85 bps for every side: 2 legs x (entry + exit)
+    assert chip["costs"]["slippage_rt"] == pytest.approx(4 * 4.854641 / 1e4)
+    assert chip["long"]["slippage_bps"] == pytest.approx(4.854641)
+    assert chip["long"]["exit_slippage_bps"] == pytest.approx(4.854641)
+    assert chip["long"]["entry_avg_price"] == 0.045933
+    assert chip["costs"]["basis_at_size"] == pytest.approx(0.0)   # same avgPrice on both legs
+    assert not any("high price impact" in f for f in chip["flags"])
+
+
+def test_high_price_impact_flag_makes_pair_not_viable():
+    from arb.scan import is_viable
+
+    cfg = copy.deepcopy(load_config())
+    cfg["execution"]["max_impact_bps"] = 1          # the fixture's 4.85 bps is now over the limit
+    p = ScanParams.from_config(cfg, venues=["hyperliquid", "aster"], min_volume_usd=0, min_hist_apr=-1,
+                               horizon_h=72)
+    result, _ = run_scan(FakeClient(), cfg, p, memory_db())
+    chip = _chip_pair(result)
+    assert any(f.startswith("high price impact on aster") and "entry" in f for f in chip["flags"]), chip["flags"]
+    assert not is_viable(chip)
+
+
+def test_exit_cost_includes_price_impact():
+    from arb.monitor import exit_cost, group_pairs, normalize_position
+
+    pairs, _ = group_pairs([normalize_position(p) for p in load("positions.json")])
+    cfg = load_config()
+    cost, usd = exit_cost(FakeClient(), cfg, pairs[0])
+    fees = taker_fee(cfg, "hyperliquid") + taker_fee(cfg, "lighter")
+    assert cost == pytest.approx(fees + 2 * 4.854641 / 1e4)          # exit sells long, buys short
+    mean_notional = (pairs[0]["long"]["notional"] + pairs[0]["short"]["notional"]) / 2
+    assert usd == pytest.approx(cost * mean_notional)
+
+
 def test_history_spread_matches_chart():
     from arb.history import FundingHistory, pair_spread
 
@@ -184,6 +230,7 @@ def test_daily_summary_layout():
             "upnl": -0.17, "funding_collected": 0.04,
             "spread": {"now": 1.0e-4, "mean_24h": 3.0e-5, "mean_72h": 8.9e-5, "mean_7d": 6.4e-5},
             "expected_next": {"24h": 0.0017, "168h": 0.0127},
+            "exit_cost_usd": 0.3,
         }],
         "alerts": ["[INFO] MET:hyperliquid>MET:lighter not in the journal"],
     }
@@ -203,6 +250,7 @@ def test_daily_summary_layout():
     assert "liq <code>42%</code> / <code>39%</code> away" in text
     assert "Funding <code>+$0.04</code> · uPnL <code>−$0.17</code>" in text
     assert "Expected next 7d: <b>+1.3%</b> of notional (~+$1.37)" in text
+    assert "Exit now: ~$0.30 (fees + price impact)" in text
     assert "Total <code>$116.04</code>" in text
     assert "not in the journal" not in text                      # INFO alerts stay out of the summary
     assert "<i>held</i>" in text and "<i>HIP-3</i>" in text and "<i>below target</i>" in text

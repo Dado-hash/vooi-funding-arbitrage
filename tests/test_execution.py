@@ -27,8 +27,15 @@ class FakeExchange:
         self.cancelled: list[str] = []
         self.leverage_set: list[tuple] = []
         self.liq = {"hyperliquid": "0.22", "lighter": "0.52"}
+        self.slip: dict[tuple[str, str], float] = {}   # (exchange, side) -> impact in bps (default 2)
 
     def call(self, tool, args=None):
+        if tool == "estimate_slippage":
+            bps = self.slip.get((args["exchange"], args["side"]), 2.0)
+            price = float(MARKETS[(args["exchange"], args["asset"])]["price"])
+            sign = 1 if args["side"] == "buy" else -1   # buying lifts the average price, selling lowers it
+            return {"avgPrice": price * (1 + sign * bps / 1e4), "slippageBps": bps, "filled": True,
+                    "filledPercent": 100}
         if tool == "get_markets":
             return {"items": [MARKETS[(args["exchanges"][0], args["assets"][0])]]}
         if tool == "get_accounts":
@@ -272,3 +279,55 @@ def test_notify_instructions_include_tp_sl(conn, monkeypatch):
     assert "Short Lighter: SL <code>0.47955</code> · TP <code>0.28724</code>" in text
     assert "<b>3. Check</b>" in text
     assert "SL 0.28724" in telegram.plain(text)
+
+
+def test_opening_blocked_when_lighter_impact_is_high(conn):
+    fx = FakeExchange()
+    fx.slip = {("lighter", "buy"): 40, ("lighter", "sell"): 40}
+    p = _approved(conn, fx)
+    r = execute(fx, load_config(), conn, p["id"])
+    assert r["status"] == "stale"
+    assert any("price impact" in x and "lighter" in x for x in r["problems"]), r["problems"]
+    assert not fx.orders
+
+
+def test_closing_is_not_blocked_by_price_impact(conn):
+    fx = FakeExchange()
+    fx.positions = {"hyperliquid": 1201.0, "lighter": -1201.0}
+    fx.slip = {("lighter", "buy"): 40, ("lighter", "sell"): 40}
+    p = approvals.propose_close(fx, conn, "MET:hyperliquid", "MET:lighter", "test", ttl_min=15)
+    approvals.set_status(conn, p["id"], "approved")
+    r = execute(fx, load_config(), conn, p["id"])
+    assert r["status"] == "executed", r
+    assert fx.positions == {"hyperliquid": 0, "lighter": 0}
+
+
+def test_proposal_shows_price_impact_and_basis_at_size(conn):
+    fx = FakeExchange()
+    p = approvals.propose_open(fx, conn, "MET:hyperliquid", "MET:lighter", 450, 2, "", ttl_min=15,
+                               max_impact_bps=25)
+    assert "Price impact" in p["summary"]
+    assert "Lighter 2 bps" in p["summary"] and "Hyperliquid 2 bps" in p["summary"]
+    assert "basis at size" in p["summary"] and "⚠️" not in p["summary"]
+    assert p["payload"]["ref_basis_at_size"] is not None
+
+    fx.slip = {("lighter", "sell"): 40}
+    p = approvals.propose_open(fx, conn, "MET:hyperliquid", "MET:lighter", 450, 2, "", ttl_min=15,
+                               max_impact_bps=25)
+    assert "Lighter 40 bps" in p["summary"] and "Above the limit of 25 bps on Lighter" in p["summary"]
+
+
+def test_notify_instructions_show_price_impact(conn, monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "notify")
+    fx = FakeExchange()
+    p = approvals.propose_open(fx, conn, "MET:hyperliquid", "MET:lighter", 450, 2, "", ttl_min=15,
+                               max_impact_bps=25)
+    assert "Price impact" in approvals.manual_instructions(p)
+
+
+def test_pre_trade_check_skips_impact_for_legacy_proposals(conn):
+    """Proposals stored before the impact check have no `ref_basis_at_size`: no basis check, no crash."""
+    fx = FakeExchange()
+    p = _approved(conn, fx)
+    p["payload"].pop("ref_basis_at_size", None)
+    assert execute(fx, load_config(), conn, p["id"])["status"] == "executed"

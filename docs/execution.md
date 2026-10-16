@@ -18,7 +18,7 @@ What happens after a pair is chosen: monitoring, approvals, order execution and 
 - pairs positions by asset (strips HIP-3 prefixes and `USDT`/`USDC` suffixes);
 - reports unhedged legs;
 - checks distance to liquidation (`min_liq_distance`) and notional imbalance (`max_imbalance`);
-- computes the expected spread over the next `exit_lookahead_h` hours, and proposes **exit** if it is worse than the exit cost;
+- computes the expected spread over the next `exit_lookahead_h` hours, and proposes **exit** if it is worse than the exit cost: taker fees of both legs plus the price impact of the exit orders at each leg's notional (`exit_cost`, `exit_cost_usd`). The daily summary shows the exit cost in dollars as `Exit now`;
 - compares each position with the best unflagged candidate from the last scan, and proposes a **rotation** if the net gain after exit and new-entry costs beats holding by `rotate_min_uplift`;
 - compares positions with the journal (positions that disappeared, positions not recorded).
 
@@ -36,6 +36,8 @@ In `execute` mode every operation is a proposal:
 4. If you approved, the agent runs `arb execute <id>`.
 5. The outcome arrives on Telegram.
 
+Proposals show the price impact of each order at its size, and for openings the basis at size. If an impact is above `max_impact_bps`, a warning says the execution check will block it. Closes show the exit impact for information only.
+
 In `notify` mode, `arb propose` sends instructions instead of buttons: pair and direction with a link to the VOOI Arbitrage Desk, leverage, size per leg, TP/SL prices, what to check after opening, and when not to open. Closing instructions remind you to cancel the leftover TP/SL. At the next cycle the agent finds the position with `arb monitor` and records it in the journal.
 
 ## Security
@@ -44,7 +46,10 @@ In `notify` mode, `arb propose` sends instructions instead of buttons: pair and 
 - **Buttons only**: text messages are ignored and are never instructions.
 - **Single use**: an approval covers one proposal, only before it expires, and the proposal runs at most once.
 - **Independent limits**: `arb execute` re-checks `[execution]` in `config.toml` (allowed venues, maximum notional per leg, maximum leverage) whatever the proposal contains.
-- **Market conditions**: before executing it re-checks the price (maximum drift 1%) and, for openings, that the funding spread is still positive and the basis has not worsened by more than 20 bps. If anything fails, the proposal becomes `stale` and a new one is needed.
+- **Market conditions**: before executing it re-checks the price (maximum drift 1%) and, for openings, that the funding spread is still positive and the basis has not worsened by more than 20 bps.
+- **Price impact** (openings only): `estimate_slippage` is called for each order at its size and side. The opening is blocked if the impact is not estimated, if the order would not fill completely, if it is above `max_impact_bps` (25 bps), or if the executable basis at size is more than 20 bps worse than the one in the proposal. Closes are never blocked by impact: a close may be urgent.
+
+If anything fails, the proposal becomes `stale` and a new one is needed.
 - **No transfers**: the agent and the CLI never move funds between venues and never withdraw. They only suggest transfers.
 
 ## Execution

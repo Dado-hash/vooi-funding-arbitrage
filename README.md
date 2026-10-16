@@ -78,7 +78,7 @@ Then connect Telegram ([setup](docs/agents.md#telegram-setup)) and start the mon
 ```bash
 uv run arb scan                                    # rank pairs by expected net return
 uv run arb pair MET:hyperliquid MET:lighter        # deep dive on one pair (long, then short)
-uv run arb portfolio --capital 1000 --leverage 2   # size 1..K strategies on your capital
+uv run arb portfolio --leverage 2                   # size 1..K strategies on your capital (default: balances)
 uv run arb monitor --scan                          # check open positions and suggest actions
 uv run arb propose open MET:hyperliquid MET:lighter --notional 100 --reason "..."
 uv run arb capital                                 # balances per venue

@@ -64,6 +64,8 @@ def _position_lines(p: dict, horizon_h: float) -> list[str]:
     if exp is not None:
         dollars = f" (~{_usd(exp * notional, sign=True)})" if notional else ""
         lines.append(f"Expected next {horizon_h / 24:g}d: <b>{exp:+.1%}</b> of notional{dollars}")
+    if p.get("exit_cost_usd") is not None:
+        lines.append(f"Exit now: ~{_usd(p['exit_cost_usd'])} (fees + price impact)")
     lines += [f"• {esc(a)}" for a in p.get("actions", [])]
     return lines
 

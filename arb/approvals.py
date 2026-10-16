@@ -13,6 +13,7 @@ from .client import VooiClient
 from .monitor import _asset_key, fetch_positions
 from .plan import build_plan, _market
 from .protection import bracket, tp_sl_levels
+from .scan import fetch_slippage
 from .store import now_iso
 
 SCHEMA = """
@@ -113,10 +114,26 @@ def _tp_sl_lines(pay: dict) -> list[str]:
     ]
 
 
+def _estimate_impact(client: VooiClient, order: dict) -> None:
+    """Stores on the order the price impact (`impact_bps`) and the executable price (`avg_price`)
+    for its size and side, as estimated by VOOI's `estimate_slippage`. Both None if unavailable."""
+    est = fetch_slippage(client, order["exchange"], order["asset"],
+                         float(order["size"]) * float(order["ref_price"]), order["side"], order.get("quote"))
+    order["impact_bps"] = est.get("slippageBps") if est else None
+    order["avg_price"] = est.get("avgPrice") if est else None
+
+
+def _basis_at_size(long_o: dict, short_o: dict) -> float | None:
+    """(short executable price − long executable price) / mid, at the orders' size."""
+    lp, sp = long_o.get("avg_price"), short_o.get("avg_price")
+    return (sp - lp) / ((sp + lp) / 2) if lp and sp else None
+
+
 def propose_open(client: VooiClient, conn, long_spec: str, short_spec: str, notional: float, leverage: float,
-                 reason: str, ttl_min: float, tp_sl_fraction: float | None = None) -> dict:
+                 reason: str, ttl_min: float, tp_sl_fraction: float | None = None,
+                 max_impact_bps: float | None = None) -> dict:
     """`tp_sl_fraction`: if set, the opening orders carry TP/SL at that fraction of the distance
-    to liquidation (see `protection`)."""
+    to liquidation (see `protection`). `max_impact_bps`: limit shown in the proposal (checked at execution)."""
     long_sym, long_ex = long_spec.rsplit(":", 1)
     short_sym, short_ex = short_spec.rsplit(":", 1)
     lm, sm = _market(client, long_ex, long_sym), _market(client, short_ex, short_sym)
@@ -128,10 +145,16 @@ def propose_open(client: VooiClient, conn, long_spec: str, short_spec: str, noti
     orders = [{"exchange": o["exchange"], "asset": o["symbol"], "quote": o["quote"], "side": o["side"].lower(),
                "size": size, "reduceOnly": False, "ref_price": o["price"],
                **(bracket(o["side"].lower(), levels) if levels else {})} for o in plan["order"]]
+    for o in orders:
+        _estimate_impact(client, o)
+    long_o = next(o for o in orders if o["side"] == "buy")
+    short_o = next(o for o in orders if o["side"] == "sell")
     payload = {
         "pair": f"{long_sym}:{long_ex}>{short_sym}:{short_ex}",
         "leverage": leverage, "notional_per_leg": notional, "orders": orders,
         "ref_basis": plan["basis_entry"],
+        "ref_basis_at_size": _basis_at_size(long_o, short_o),
+        "max_impact_bps": max_impact_bps,
         "ref_spread_h": float(sm["fundingRate"]) - float(lm["fundingRate"]),
         "protection": levels,
         "reason": reason,
@@ -147,6 +170,7 @@ def propose_open(client: VooiClient, conn, long_spec: str, short_spec: str, noti
         lines += ["", "<b>TP/SL included in the orders</b>"] + _tp_sl_lines(payload)
     lines += ["", f"📊 Funding spread now: <b>{payload['ref_spread_h'] * 8760:+.0%} APR</b> · "
                   f"basis {plan['basis_entry'] * 1e4:+.1f} bps"]
+    lines += _impact_lines(payload)
     if reason:
         lines += ["", "<b>Why</b>", esc(reason)]
     return _insert(conn, "open", payload, "\n".join(lines), ttl_min)
@@ -169,6 +193,8 @@ def propose_close(client: VooiClient, conn, long_spec: str, short_spec: str, rea
     legs = sorted([(long_ex, long_sym, "sell", lp), (short_ex, short_sym, "buy", sp)], key=lambda x: x[3]["notional"] or 0)
     orders = [{"exchange": ex, "asset": sym, "quote": p.get("quote"), "side": side, "size": f"{p['size']:g}",
                "reduceOnly": True, "ref_price": p["mark_price"]} for ex, sym, side, p in legs]
+    for o in orders:  # informational: a close is never blocked by its impact
+        _estimate_impact(client, o)
     payload = {"pair": f"{long_sym}:{long_ex}>{short_sym}:{short_ex}", "orders": orders, "reason": reason,
                "upnl": (lp["upnl"] or 0) + (sp["upnl"] or 0),
                "funding": (lp["funding_fee"] or 0) + (sp["funding_fee"] or 0)}
@@ -181,10 +207,31 @@ def propose_close(client: VooiClient, conn, long_spec: str, short_spec: str, rea
         "Then I cancel the TP/SL left on these legs.",
         "",
         f"💰 uPnL {payload['upnl']:+.2f}$ · funding collected {payload['funding']:+.2f}$",
-    ]
+    ] + _impact_lines(payload, exit=True)
     if reason:
         lines += ["", "<b>Why</b>", esc(reason)]
     return _insert(conn, "close", payload, "\n".join(lines), ttl_min)
+
+
+def _impact_lines(pay: dict, exit: bool = False) -> list[str]:
+    """HTML lines with the price impact of each order at its size (and the basis at size on openings).
+    Empty for proposals created before the impact was stored."""
+    if not any("impact_bps" in o for o in pay["orders"]):
+        return []
+    label = "Exit price impact" if exit else "Price impact"
+    parts = [f"{_venue(o['exchange'])} {o['impact_bps']:.0f} bps" if o.get("impact_bps") is not None
+             else f"{_venue(o['exchange'])} n/a" for o in pay["orders"]]
+    line = f"💧 {label}: " + " · ".join(parts)
+    if not exit and pay.get("ref_basis_at_size") is not None:
+        line += f" · basis at size {pay['ref_basis_at_size'] * 1e4:+.1f} bps"
+    lines = [line]
+    limit = pay.get("max_impact_bps")
+    over = [o for o in pay["orders"] if limit is not None and not exit
+            and o.get("impact_bps") is not None and o["impact_bps"] > limit]
+    if over:
+        lines.append(f"⚠️ Above the limit of {limit:.0f} bps on " + ", ".join(_venue(o["exchange"]) for o in over)
+                     + ": the execution check will block it. Re-propose at the next cycle.")
+    return lines
 
 
 def _desk_url(order_long: dict, order_short: dict) -> str | None:
@@ -224,6 +271,7 @@ def manual_instructions(p: dict) -> str:
              if pay.get("protection") else []) + [
             "",
             f"📊 Funding spread now: <b>{pay['ref_spread_h'] * 8760:+.0%} APR</b> · basis {pay['ref_basis'] * 1e4:+.1f} bps",
+        ] + _impact_lines(pay) + [
             "⚠️ Do not open if the spread turned negative or the price moved more than 1%: wait for the next cycle.",
         ]
     else:
@@ -239,6 +287,7 @@ def manual_instructions(p: dict) -> str:
             "<b>2. Cancel the leftover TP/SL</b> on these legs (Open orders): otherwise they stay active "
             "and can hit a future position on the same asset.",
         ]
+        lines += _impact_lines(pay, exit=True)
         if "upnl" in pay:
             lines += ["", f"💰 uPnL {pay['upnl']:+.2f}$ · funding collected {pay['funding']:+.2f}$"]
     if pay.get("reason"):

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from .client import MCPError, VooiClient
 from .config import taker_fee
 from .metrics import expected_cum, spread_stats
-from .scan import spread_chart
+from .scan import fetch_slippage, spread_chart
 from .store import journal_list, last_scan, now_iso
 
 LEVELS = ["OK", "INFO", "WARNING", "ACTION"]
@@ -108,6 +108,24 @@ def _spread_series(client: VooiClient, pair: dict, days: int = 7) -> list[float]
     return spread_chart(client, leg(pair["long"]), leg(pair["short"]), days)
 
 
+def exit_cost(client: VooiClient, cfg: dict, pair: dict) -> tuple[float, float | None]:
+    """Cost of closing the pair now, as a fraction of the notional of one leg: taker fees of both legs
+    plus the price impact of the exit orders (long sells, short buys) at each leg's notional.
+    A leg whose impact cannot be estimated counts as fees only. Returns (fraction, USD)."""
+    cost = 0.0
+    notionals = []
+    for leg, side in ((pair["long"], "sell"), (pair["short"], "buy")):
+        cost += taker_fee(cfg, leg["exchange"])
+        if not leg.get("notional"):
+            continue
+        notionals.append(leg["notional"])
+        est = fetch_slippage(client, leg["exchange"], leg["symbol"], leg["notional"], side, leg.get("quote"))
+        if est and est.get("slippageBps") is not None:
+            cost += float(est["slippageBps"]) / 1e4
+    usd = cost * sum(notionals) / len(notionals) if notionals else None
+    return cost, usd
+
+
 def assess_pair(client: VooiClient, cfg: dict, pair: dict, best: dict | None) -> dict:
     mcfg = cfg.get("monitor", {})
     horizon = cfg.get("scan", {}).get("horizon_h", 72)
@@ -133,20 +151,20 @@ def assess_pair(client: VooiClient, cfg: dict, pair: dict, best: dict | None) ->
     except MCPError as e:
         actions.append(("WARNING", f"spread history unavailable: {e}"))
 
-    exit_cost = taker_fee(cfg, l["exchange"]) + taker_fee(cfg, s["exchange"])
+    cost, cost_usd = exit_cost(client, cfg, pair)
     hold_look = hold_h = None
     if stats:
         hold_look = expected_cum(stats, look)
         hold_h = expected_cum(stats, horizon)
-        if hold_look < -exit_cost:
-            actions.append(("ACTION", f"exit: expected spread over {look}h {hold_look:+.3%} worse than exit cost {exit_cost:.3%}"))
+        if hold_look < -cost:
+            actions.append(("ACTION", f"exit: expected spread over {look}h {hold_look:+.3%} worse than exit cost {cost:.3%}"))
         elif stats.mean_24h < 0:
             actions.append(("WARNING", f"negative 24h mean spread ({stats.mean_24h * 8760:+.0%} APR)"))
         elif stats.now < 0:
             actions.append(("INFO", "negative spread in the last hour"))
 
         if best and best.get("id") and hold_h is not None:
-            switch = best["eval"]["net_exp"] - exit_cost
+            switch = best["eval"]["net_exp"] - cost
             uplift = mcfg.get("rotate_min_uplift", 0.5)
             if switch > 0 and switch > max(hold_h, 0) * (1 + uplift):
                 actions.append(("WARNING",
@@ -166,6 +184,8 @@ def assess_pair(client: VooiClient, cfg: dict, pair: dict, best: dict | None) ->
         "funding_collected": (l["funding_fee"] or 0) + (s["funding_fee"] or 0),
         "spread": stats.as_dict() if stats else None,
         "expected_next": {f"{look}h": hold_look, f"{horizon}h": hold_h},
+        "exit_cost": cost,
+        "exit_cost_usd": cost_usd,
     }
 
 
