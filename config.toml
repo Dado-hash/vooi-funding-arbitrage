@@ -3,7 +3,6 @@
 [scan]
 venues = ["hyperliquid", "lighter"] # [] = all venues. Chosen with `arb venues` on 2026-10-15
 both_legs = true                    # both legs must be in `venues` (as in the VOOI UI)
-notional_usd = 100                  # keep equal to [strategy].notional_per_strategy: costs are estimated at this size
 horizon_h = 168                     # holding horizon (7 days): with taker fees, 72h is not enough to cover costs
 min_hist_apr = 0.05                 # minimum 7d mean APR to make the ranking (0.05 = 5%)
 min_volume_usd = 100000             # minimum 24h volume of the strategy (sum of legs)
@@ -46,7 +45,7 @@ tp_sl_liq_fraction = 0.7           # levels at 70% of the estimated (isolated) l
 # Example values for about $120 total capital: one strategy, $100 per leg.
 [strategy]
 max_strategies = 1                 # strategies in parallel (one at this capital size)
-notional_per_strategy = 100        # USD per leg: with ~$58 per venue at 2x (margin $50 + 10% buffer)
+notional_per_strategy = 100        # USD per leg: with ~$58 per venue at 2x (margin $50 + 10% buffer). Also the size at which `arb scan` estimates costs and price impact
 leverage = 2                       # leverage used on both legs
 min_apr_on_capital = 0.20          # minimum net annualized return on committed capital (margin), leverage included
 max_breakeven_h = 72               # maximum hours to cover costs

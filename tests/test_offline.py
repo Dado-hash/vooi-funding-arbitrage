@@ -257,3 +257,12 @@ def test_daily_summary_layout():
 
     report["pairs"][0]["status"] = "ACTION"
     assert "🔴 <b>Action needed</b>" in build_daily(report, balances, None, 168)
+
+
+def test_scan_notional_follows_strategy_size():
+    cfg = load_config()
+    assert "notional_usd" not in cfg["scan"]
+    assert ScanParams.from_config(cfg).notional_usd == cfg["strategy"]["notional_per_strategy"]
+    cfg["strategy"]["notional_per_strategy"] = 500
+    assert ScanParams.from_config(cfg).notional_usd == 500
+    assert ScanParams.from_config(cfg, notional_usd=1000).notional_usd == 1000   # --notional wins

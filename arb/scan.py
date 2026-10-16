@@ -42,6 +42,9 @@ class ScanParams:
     @classmethod
     def from_config(cls, cfg: dict, **overrides) -> "ScanParams":
         base = {k: v for k, v in cfg.get("scan", {}).items() if k in cls.__dataclass_fields__}
+        # Costs and price impact are estimated at the size actually traded: one setting, in [strategy].
+        if "notional_per_strategy" in cfg.get("strategy", {}):
+            base["notional_usd"] = float(cfg["strategy"]["notional_per_strategy"])
         base.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**base)
 

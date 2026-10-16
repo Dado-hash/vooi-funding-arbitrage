@@ -115,7 +115,7 @@ def cmd_propose(args, cfg, client) -> None:
     if args.kind == "open":
         from .capital import check_capital
 
-        notional = args.notional or cfg.get("strategy", {}).get("notional_per_strategy") or cfg["scan"]["notional_usd"]
+        notional = args.notional or ScanParams.from_config(cfg).notional_usd
         exchanges = [args.long.rsplit(":", 1)[1], args.short.rsplit(":", 1)[1]]
         capital = check_capital(client, cfg, exchanges, notional, args.leverage)
         if capital["missing"] > 0 or (not capital["ok"] and mode == "execute"):

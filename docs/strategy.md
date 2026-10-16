@@ -20,7 +20,7 @@ How `arb` finds, scores and sizes funding-arbitrage pairs. Back to the [README](
 3. **Ranking**: only pairs with a 7-day mean APR ≥ `min_hist_apr` enter, sorted by `score` using the configured fees.
 4. **Real costs**: for the top `deep` pairs:
    - `get_markets` (one paginated call per venue) for price, OI, interval and next settlement;
-   - `estimate_slippage` for the price impact and fill of each leg, on both sides: entry (long buys, short sells) and exit (long sells, short buys), at `notional_usd`;
+   - `estimate_slippage` for the price impact and fill of each leg, on both sides: entry (long buys, short sells) and exit (long sells, short buys), at `notional_per_strategy`;
    - `get_quotes` for the real fees of the single market (`feesBps`, VOOI fees included).
 
 A first scan of all DEX venues takes about 3 minutes, because it downloads 30 days of history for about 740 markets. Later scans only update the latest hours.
@@ -38,7 +38,7 @@ Spread = `short_rate − long_rate`, hourly. Returns are a fraction of the notio
 | `hl` | Half-life: hours for the current deviation from the mean to halve (from `phi`, lag-1 autocorrelation). Low = short-lived spike |
 | `exp` | Expected funding over the horizon with an AR(1) model (the spread starts at the current value and reverts toward the mean: 50% 72h + 50% 7d), plus the expected basis P&L |
 | `cons` | Pessimistic scenario: the lowest mean among 24h, 72h and 7d held for the whole horizon, plus the pessimistic basis P&L |
-| `cost` | Round-trip costs: taker fee × 2 legs × (entry + exit) + price impact of entry and exit on both legs, at `notional_usd` |
+| `cost` | Round-trip costs: taker fee × 2 legs × (entry + exit) + price impact of entry and exit on both legs, at `notional_per_strategy` |
 | `net` | `(exp + cons)/2 − cost`, i.e. the expected net return |
 | `score` | `net` annualized over the horizon. **This is the ranking metric** |
 | `BE` | Holding hours needed to cover the costs |
@@ -46,7 +46,7 @@ Spread = `short_rate − long_rate`, hourly. Returns are a fraction of the notio
 | `apr_on_capital` | Net annualized return on committed capital, leverage included: `net × leverage/2 × 8760/horizon`. Total margin is 2 legs × notional / leverage, so at 2x it equals the per-leg net. **Minimum target: 20%** (`min_apr_on_capital`) |
 | `roi_on_margin` | `net` × common leverage ÷ 2: return on the total margin of both legs |
 | `basis_entry` | `(short price − long price)/mid` at entry, from market prices. Positive = favorable |
-| `basis_at_size` | Same, from the executable average prices of the entry orders at `notional_usd` (`estimate_slippage`). This is the basis you actually get |
+| `basis_at_size` | Same, from the executable average prices of the entry orders at `notional_per_strategy` (`estimate_slippage`). This is the basis you actually get |
 | `basis_mean` | Historical mean basis from price snapshots (`price_snapshots`, one per scan). Used from 24 snapshots onward |
 
 ## Basis
