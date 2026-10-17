@@ -46,13 +46,13 @@ All commands run as `uv run arb ...`.
 
 ## Configuration
 
-Secrets and the trading mode live in `.env` (see [`.env.example`](../.env.example)). Everything else is in `config.toml`. CLI flags override it.
+Secrets and the trading mode live in `.env` (see [`.env.example`](../.env.example)). Everything else is in `config.toml`, a local file not tracked by git: copy it from [`config.example.toml`](../config.example.toml) and size it to your capital. Without it the example is used (the tests always use the example). CLI flags override it.
 
 | Section | Options |
 |---|---|
 | `[scan]` | `venues`, `both_legs`, `horizon_h`, `min_hist_apr`, `min_volume_usd`, `min_oi_usd`, `deep`, `history_days` |
 | `[venues]` | `dex`: on-chain venues used by `--dex` |
 | `[fees.taker]` | Estimated taker fee per venue (stage 2 only; stage 4 reads real fees from `get_quotes`) |
-| `[execution]` | Limits for `arb execute`, applied whatever a proposal contains: `venues`, `max_notional_per_leg`, `max_leverage`, `max_price_drift`, `max_basis_worsening`, `max_impact_bps` (max price impact per side, in bps, for the scan flag and the pre-trade check; closes are never blocked), `proposal_ttl_min`, `tp_sl`, `tp_sl_liq_fraction` |
+| `[execution]` | Limits for `arb execute`, applied whatever a proposal contains: `venues`, `max_notional_per_leg`, `max_leverage`, `max_price_drift`, `max_basis_worsening`, `min_entry_basis` (lowest entry basis at mid and at size, default 0: below it no proposal, no execution, blocking scan flag), `max_impact_bps` (max price impact per side, in bps, for the scan flag and the pre-trade check; closes are never blocked), `proposal_ttl_min`, `tp_sl`, `tp_sl_liq_fraction` |
 | `[strategy]` | Rules for opening new strategies in the cycle: `max_strategies`, `notional_per_strategy` (also the size at which `arb scan` estimates costs and price impact; `--notional` overrides it), `leverage`, `min_apr_on_capital`, `max_breakeven_h`, `capital_buffer`. The defaults fit about $120 of capital: one strategy, $100 per leg |
 | `[monitor]` | Position alarms and rotation: `min_liq_distance`, `max_imbalance`, `exit_lookahead_h`, `rotate_min_uplift` |

@@ -21,7 +21,7 @@ from .config import trading_mode
 from .monitor import _asset_key, fetch_positions
 from .plan import _market
 from .protection import check_against_liq
-from .scan import fetch_slippage
+from .scan import fetch_slippage, min_entry_basis
 from .store import journal_open, now_iso
 
 
@@ -38,6 +38,7 @@ def _limits(cfg: dict) -> dict:
         "max_price_drift": float(e.get("max_price_drift", 0.01)),
         "max_basis_worsening": float(e.get("max_basis_worsening", 0.002)),
         "max_impact_bps": float(e.get("max_impact_bps", 25)),
+        "min_entry_basis": min_entry_basis(cfg),
     }
 
 
@@ -107,11 +108,12 @@ def check(client: VooiClient, cfg: dict, p: dict) -> list[str]:
         ref_size = pay.get("ref_basis_at_size")
         by_side = {o["side"]: o["_impact"] for o in pay["orders"]}
         la, sa = by_side["buy"].get("avgPrice"), by_side["sell"].get("avgPrice")
-        if ref_size is not None and la and sa:
-            exec_basis = (sa - la) / ((sa + la) / 2)
+        exec_basis = (sa - la) / ((sa + la) / 2) if la and sa else None
+        if ref_size is not None and exec_basis is not None:
             if exec_basis < ref_size - lim["max_basis_worsening"]:
                 problems.append(f"price impact worsened the basis at size: {exec_basis * 1e4:+.1f} bps "
                                 f"against {ref_size * 1e4:+.1f} at the proposal")
+        problems += approvals.entry_basis_problems(basis, exec_basis, lim["min_entry_basis"])
     return problems
 
 

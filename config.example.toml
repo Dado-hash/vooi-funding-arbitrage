@@ -1,3 +1,6 @@
+# Copy to config.toml and customize. config.toml is in .gitignore; this file is the tracked template
+# (also used by the tests, so they do not depend on your local values).
+
 # Default parameters. CLI flags take precedence.
 
 [scan]
@@ -6,7 +9,7 @@ both_legs = true                    # both legs must be in `venues` (as in the V
 horizon_h = 168                     # holding horizon (7 days): with taker fees, 72h is not enough to cover costs
 min_hist_apr = 0.05                 # minimum 7d mean APR to make the ranking (0.05 = 5%)
 min_volume_usd = 100000             # minimum 24h volume of the strategy (sum of legs)
-min_oi_usd = 50000                  # minimum open interest per leg
+min_oi_usd = 100000                 # minimum open interest per leg
 deep = 15                           # pairs for which slippage and real costs are computed
 history_days = 30                   # history for persistence metrics (pos_all, mean_all); the 24h/72h/7d windows stay
 
@@ -36,6 +39,7 @@ max_notional_per_leg = 1000        # USD
 max_leverage = 2
 max_price_drift = 0.01             # maximum price move from the proposal's reference price
 max_basis_worsening = 0.002        # maximum basis worsening (20 bps) before re-proposing
+min_entry_basis = 0.0              # lowest entry basis (short − long)/mid, at mid and at size: below it no proposal, no execution, blocking scan flag
 max_impact_bps = 25                # max price impact per side (bps) for the scan flag and the pre-trade check
 proposal_ttl_min = 15              # proposal validity: after that, the approval no longer counts
 tp_sl = true                       # TP/SL on the opening orders (and in the notify instructions)
@@ -44,9 +48,9 @@ tp_sl_liq_fraction = 0.7           # levels at 70% of the estimated (isolated) l
 # Rules for the monitoring cycle (see docs/cycle.md)
 # Example values for about $120 total capital: one strategy, $100 per leg.
 [strategy]
-max_strategies = 1                 # strategies in parallel (one at this capital size)
-notional_per_strategy = 100        # USD per leg: with ~$58 per venue at 2x (margin $50 + 10% buffer). Also the size at which `arb scan` estimates costs and price impact
-leverage = 2                       # leverage used on both legs
+max_strategies = 3                 # strategies in parallel (one at this capital size)
+notional_per_strategy = 35         # USD per leg: with ~$58 per venue at 2x (margin $50 + 10% buffer). Also the size at which `arb scan` estimates costs and price impact
+leverage = 3                       # leverage used on both legs
 min_apr_on_capital = 0.20          # minimum net annualized return on committed capital (margin), leverage included
 max_breakeven_h = 72               # maximum hours to cover costs
 capital_buffer = 0.10              # extra margin required per venue beyond notional/leverage (fees, swings)

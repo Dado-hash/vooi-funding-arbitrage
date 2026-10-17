@@ -331,3 +331,29 @@ def test_pre_trade_check_skips_impact_for_legacy_proposals(conn):
     p = _approved(conn, fx)
     p["payload"].pop("ref_basis_at_size", None)
     assert execute(fx, load_config(), conn, p["id"])["status"] == "executed"
+
+
+def test_no_proposal_when_entry_basis_is_negative(conn, monkeypatch):
+    """Long quoted above short: buying high and selling low is never proposed."""
+    fx = FakeExchange()
+    monkeypatch.setitem(MARKETS[("lighter", "MET")], "price", "0.3740")    # short below long
+    with pytest.raises(approvals.BasisError, match="entry basis"):
+        approvals.propose_open(fx, conn, "MET:hyperliquid", "MET:lighter", 450, 2, "", ttl_min=15, min_basis=0.0)
+
+
+def test_no_proposal_when_basis_at_size_is_negative(conn):
+    """Positive basis at mid (+8 bps) but the price impact turns it negative at size."""
+    fx = FakeExchange()
+    fx.slip = {("lighter", "sell"): 10, ("hyperliquid", "buy"): 10}
+    with pytest.raises(approvals.BasisError, match="basis at size"):
+        approvals.propose_open(fx, conn, "MET:hyperliquid", "MET:lighter", 450, 2, "", ttl_min=15, min_basis=0.0)
+
+
+def test_opening_blocked_when_basis_turns_negative(conn, monkeypatch):
+    fx = FakeExchange()
+    p = _approved(conn, fx)
+    monkeypatch.setitem(MARKETS[("lighter", "MET")], "price", "0.3744")    # -2.7 bps: within worsening limit
+    r = execute(fx, load_config(), conn, p["id"])
+    assert r["status"] == "stale"
+    assert any("entry basis" in x for x in r["problems"]), r["problems"]
+    assert not fx.orders

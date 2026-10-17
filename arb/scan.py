@@ -22,8 +22,10 @@ from .store import basis_mean, now_iso, save_prices
 
 WORKERS = 6
 BLOCKING_FLAGS = ("costs not covered", "thin book", "negative 24h mean spread",
-                  "unstable", "cost analysis failed", "high price impact")
+                  "unstable", "cost analysis failed", "high price impact", "unfavorable entry basis",
+                  "unfavorable basis at size")
 DEFAULT_MAX_IMPACT_BPS = 25
+DEFAULT_MIN_ENTRY_BASIS = 0.0
 
 
 @dataclass
@@ -200,6 +202,7 @@ def _deepen(client: VooiClient, c: dict, cfg: dict, p: ScanParams, markets: dict
             basis_hist: tuple[float | None, int]) -> dict:
     stats = c.get("_stats") or SpreadStats(**c["stats"])
     max_impact = float(cfg.get("execution", {}).get("max_impact_bps", DEFAULT_MAX_IMPACT_BPS))
+    min_basis = min_entry_basis(cfg)
     fees = []
     # Entry side (long buys, short sells) and exit side (long sells, short buys), both at the notional.
     for role, side, exit_side in (("long", "buy", "sell"), ("short", "sell", "buy")):
@@ -243,7 +246,7 @@ def _deepen(client: VooiClient, c: dict, cfg: dict, p: ScanParams, markets: dict
     c["eval"] = evaluate(stats, p.horizon_h, cost_rt, basis, b_mean).as_dict()
     c["roi_on_margin"] = _roi_on_margin(c)
     c["apr_on_capital"] = apr_on_capital(c["eval"]["net_blend"], p.horizon_h, strategy_leverage(cfg))
-    c["flags"] = _flags(c, p, max_impact)
+    c["flags"] = _flags(c, p, max_impact, min_basis)
     target = cfg.get("strategy", {}).get("min_apr_on_capital")
     if target is not None and c["apr_on_capital"] < target:
         c["flags"].append(f"below target: {c['apr_on_capital']:.0%} on capital (min {target:.0%})")
@@ -281,7 +284,13 @@ def _roi_on_margin(c: dict) -> dict:
     return {"leverage": lev, "net_blend_on_margin": c["eval"]["net_blend"] * lev / 2}
 
 
-def _flags(c: dict, p: ScanParams, max_impact_bps: float = DEFAULT_MAX_IMPACT_BPS) -> list[str]:
+def min_entry_basis(cfg: dict) -> float:
+    """Lowest accepted entry basis (short − long)/mid: below it the pair is not opened."""
+    return float(cfg.get("execution", {}).get("min_entry_basis", DEFAULT_MIN_ENTRY_BASIS))
+
+
+def _flags(c: dict, p: ScanParams, max_impact_bps: float = DEFAULT_MAX_IMPACT_BPS,
+           min_basis: float = DEFAULT_MIN_ENTRY_BASIS) -> list[str]:
     st, ev, flags = c["stats"], c["eval"], []
     if st["n_hours"] < 72:
         flags.append(f"short history ({st['n_hours']}h)")
@@ -321,10 +330,10 @@ def _flags(c: dict, p: ScanParams, max_impact_bps: float = DEFAULT_MAX_IMPACT_BP
     if c["long"]["exchange"] == c["short"]["exchange"]:
         flags.append("same venue, different underlyings: basis risk")
     basis = c["costs"].get("basis_entry")
-    if basis is not None and basis < -0.002:
+    if basis is not None and basis < min_basis:
         flags.append(f"unfavorable entry basis ({basis:.2%})")
     basis_size = c["costs"].get("basis_at_size")
-    if basis_size is not None and basis_size < -0.002:
+    if basis_size is not None and basis_size < min_basis:
         flags.append(f"unfavorable basis at size ({basis_size:.2%})")
     return flags
 
