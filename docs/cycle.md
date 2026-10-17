@@ -37,6 +37,7 @@ This is the procedure for one run of the VOOI funding-arbitrage monitoring loop.
    - `uv run arb portfolio --leverage 2 --max-k 2 --json`, then choose from the valid candidates. Capital defaults to the equity on the venues (`get_accounts`).
    - Requirements, all necessary:
      - no blocking flag, current spread > 0, market not HIP-3;
+     - entry basis not negative (no `unfavorable entry basis` / `unfavorable basis at size` flag): never buy the long above the short's price;
      - net return on capital (`apr_on_capital`, leverage included) ≥ `min_apr_on_capital` (20%) at the notional `notional_per_strategy`. Pairs below the threshold carry the flag `below target` and `arb portfolio` already excludes them;
      - break-even ≤ `max_breakeven_h`;
      - the pair is not already open.
@@ -45,7 +46,7 @@ This is the procedure for one run of the VOOI funding-arbitrage monitoring loop.
    - `arb propose open` checks the capital itself (`get_accounts`): required margin per venue = notional/leverage + `capital_buffer` (10%).
      - Funds unbalanced across venues: in `notify` the message starts with "BEFORE OPENING: move $X from A to B". In `execute` the proposal is not created and only the warning to move funds is sent.
      - Total capital insufficient: no proposal, only the warning.
-     - If the output says `proposal NOT created`, stop here for this cycle.
+     - If the output says `proposal NOT created`, stop here for this cycle. This includes `[basis]`: a negative entry basis (long priced above short, at mid or at size) blocks the proposal.
      - **Never** move funds yourself: the user does it on VOOI (Transfer).
    - In `execute` mode, right after: `uv run arb tg wait <id>` **in the background**. When it finishes with `approved`, run `uv run arb execute <id>`. With `rejected` or `expired`, do nothing.
    - At most one new opening per cycle. If no pair reaches the target, do not open: staying liquid is fine.

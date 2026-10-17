@@ -129,11 +129,26 @@ def _basis_at_size(long_o: dict, short_o: dict) -> float | None:
     return (sp - lp) / ((sp + lp) / 2) if lp and sp else None
 
 
+class BasisError(ValueError):
+    """The entry basis is unfavorable: the long would be bought above the price the short is sold at."""
+
+
+def entry_basis_problems(basis: float | None, basis_at_size: float | None, min_basis: float) -> list[str]:
+    """Problems with the entry basis, at mid and at the orders' size. Empty list = ok."""
+    out = []
+    if basis is not None and basis < min_basis:
+        out.append(f"entry basis {basis * 1e4:+.1f} bps below {min_basis * 1e4:+.1f}")
+    if basis_at_size is not None and basis_at_size < min_basis:
+        out.append(f"basis at size {basis_at_size * 1e4:+.1f} bps below {min_basis * 1e4:+.1f}")
+    return out
+
+
 def propose_open(client: VooiClient, conn, long_spec: str, short_spec: str, notional: float, leverage: float,
                  reason: str, ttl_min: float, tp_sl_fraction: float | None = None,
-                 max_impact_bps: float | None = None) -> dict:
+                 max_impact_bps: float | None = None, min_basis: float | None = None) -> dict:
     """`tp_sl_fraction`: if set, the opening orders carry TP/SL at that fraction of the distance
-    to liquidation (see `protection`). `max_impact_bps`: limit shown in the proposal (checked at execution)."""
+    to liquidation (see `protection`). `max_impact_bps`: limit shown in the proposal (checked at execution).
+    `min_basis`: if set, raises `BasisError` when the entry basis (at mid or at size) is below it."""
     long_sym, long_ex = long_spec.rsplit(":", 1)
     short_sym, short_ex = short_spec.rsplit(":", 1)
     lm, sm = _market(client, long_ex, long_sym), _market(client, short_ex, short_sym)
@@ -149,6 +164,10 @@ def propose_open(client: VooiClient, conn, long_spec: str, short_spec: str, noti
         _estimate_impact(client, o)
     long_o = next(o for o in orders if o["side"] == "buy")
     short_o = next(o for o in orders if o["side"] == "sell")
+    if min_basis is not None:
+        bad = entry_basis_problems(plan["basis_entry"], _basis_at_size(long_o, short_o), min_basis)
+        if bad:
+            raise BasisError("; ".join(bad))
     payload = {
         "pair": f"{long_sym}:{long_ex}>{short_sym}:{short_ex}",
         "leverage": leverage, "notional_per_leg": notional, "orders": orders,

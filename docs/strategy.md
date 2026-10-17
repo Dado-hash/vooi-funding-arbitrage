@@ -56,7 +56,7 @@ The price P&L of a pair is `b₀ − b_exit`, with b = (short price − long pri
 - **expected**: with history, `b₀ − basis_mean` (the pair returns to its normal level). Without history, `b₀ × 0.5` (partial convergence toward zero);
 - **pessimistic**: an unfavorable basis converges (a loss), a favorable one persists (zero gain).
 
-`basis_at_size` uses the average execution prices of the entry orders instead of the market prices, so it includes the price impact. A basis below −20 bps at size is flagged `unfavorable basis at size`.
+`basis_at_size` uses the average execution prices of the entry orders instead of the market prices, so it includes the price impact. A negative basis, at mid or at size (below `[execution] min_entry_basis`, default 0), is a blocking flag: the pair is never opened, whatever the funding spread.
 
 Every scan stores the prices of all markets on the configured venues, so the estimate of the normal basis improves over time. On liquid Hyperliquid/Lighter pairs the entry basis is typically 5-15 bps: small compared to weekly funding, but comparable to the fees.
 
@@ -70,6 +70,8 @@ Every scan stores the prices of all markets on the configured venues, so the est
 | `negative 24h mean spread` | Paying funding on average over the last day | ✅ |
 | `unstable: positive X% of hours over 72h` | `pos72` < 60% | ✅ |
 | `cost analysis failed: ...` | Stage 4 errored | ✅ |
+| `unfavorable entry basis (X%)` | Entry basis (market prices) below `[execution] min_entry_basis` (0): the long would be bought above the short's price | ✅ |
+| `unfavorable basis at size (X%)` | `basis_at_size` below `min_entry_basis` (0) | ✅ |
 | `below target: X on capital (min Y)` | `apr_on_capital` under 20%: `arb portfolio` and the cycle skip it | portfolio |
 | `negative current spread: entering now pays funding` | | portfolio |
 | `same venue, different underlyings: basis risk` | e.g. USBOND against TLT: not pure delta-neutral | portfolio |
@@ -79,9 +81,7 @@ Every scan stores the prices of all markets on the configured venues, so the est
 | `short history (Nh)` | Less than 72 hours of data | |
 | `low OI on <ex>` | Open interest under `min_oi_usd` | |
 | `slippage not estimated on <ex>` / `exit impact not estimated on <ex>` | `estimate_slippage` failed for the entry or exit side | |
-| `unfavorable basis at size (X%)` | `basis_at_size` below −20 bps | |
 | `settlement on <ex> ...` | 4h/8h venue with the next payment within 60 minutes | |
-| `unfavorable entry basis` | Entry basis (market prices) below −20 bps | |
 
 ## Venue comparison
 

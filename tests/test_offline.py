@@ -136,6 +136,19 @@ def test_high_price_impact_flag_makes_pair_not_viable():
     assert not is_viable(chip)
 
 
+def test_unfavorable_basis_flag_makes_pair_not_viable():
+    from arb.scan import is_viable
+
+    cfg = copy.deepcopy(load_config())
+    cfg["execution"]["min_entry_basis"] = 0.0001   # the fixture's basis at size is exactly 0
+    p = ScanParams.from_config(cfg, venues=["hyperliquid", "aster"], min_volume_usd=0, min_hist_apr=-1,
+                               horizon_h=72)
+    result, _ = run_scan(FakeClient(), cfg, p, memory_db())
+    chip = _chip_pair(result)
+    assert any(f.startswith("unfavorable basis at size") for f in chip["flags"]), chip["flags"]
+    assert not is_viable(chip)
+
+
 def test_exit_cost_includes_price_impact():
     from arb.monitor import exit_cost, group_pairs, normalize_position
 

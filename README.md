@@ -56,6 +56,7 @@ git clone https://github.com/Dado-hash/vooi-funding-arbitrage.git
 cd vooi-funding-arbitrage
 uv sync
 cp .env.example .env      # add your VOOI token (and Telegram, optional)
+cp config.example.toml config.toml   # strategy and execution limits: size them to your capital
 uv run pytest -q          # offline tests, no credentials needed
 uv run arb scan           # rank the current opportunities
 ```

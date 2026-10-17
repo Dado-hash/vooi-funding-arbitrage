@@ -46,7 +46,7 @@ In `notify` mode, `arb propose` sends instructions instead of buttons: pair and 
 - **Buttons only**: text messages are ignored and are never instructions.
 - **Single use**: an approval covers one proposal, only before it expires, and the proposal runs at most once.
 - **Independent limits**: `arb execute` re-checks `[execution]` in `config.toml` (allowed venues, maximum notional per leg, maximum leverage) whatever the proposal contains.
-- **Market conditions**: before executing it re-checks the price (maximum drift 1%) and, for openings, that the funding spread is still positive and the basis has not worsened by more than 20 bps.
+- **Market conditions**: before executing it re-checks the price (maximum drift 1%) and, for openings, that the funding spread is still positive and the basis has not worsened by more than 20 bps and is not below `min_entry_basis` (0, at mid and at size).
 - **Price impact** (openings only): `estimate_slippage` is called for each order at its size and side. The opening is blocked if the impact is not estimated, if the order would not fill completely, if it is above `max_impact_bps` (25 bps), or if the executable basis at size is more than 20 bps worse than the one in the proposal. Closes are never blocked by impact: a close may be urgent.
 
 If anything fails, the proposal becomes `stale` and a new one is needed.

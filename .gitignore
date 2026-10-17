@@ -5,3 +5,5 @@ __pycache__/
 data/
 !data/.gitkeep
 .claude/settings.local.json
+config.toml
+.DS_Store

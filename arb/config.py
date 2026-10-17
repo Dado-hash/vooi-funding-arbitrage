@@ -1,4 +1,6 @@
-"""Loads config.toml and .env from the project root."""
+"""Loads config.toml and .env from the project root.
+
+`config.toml` is local (not tracked): copy it from `config.example.toml`. Without it the example is used."""
 
 import os
 import tomllib
@@ -6,6 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
+CONFIG_PATH = ROOT / "config.toml"
+EXAMPLE_CONFIG_PATH = ROOT / "config.example.toml"
 
 
 def load_dotenv(path: Path = ROOT / ".env") -> None:
@@ -19,7 +23,9 @@ def load_dotenv(path: Path = ROOT / ".env") -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-def load_config(path: Path = ROOT / "config.toml") -> dict:
+def load_config(path: Path | None = None) -> dict:
+    if path is None:
+        path = CONFIG_PATH if CONFIG_PATH.exists() else EXAMPLE_CONFIG_PATH
     with open(path, "rb") as f:
         return tomllib.load(f)
 

@@ -131,8 +131,16 @@ def cmd_propose(args, cfg, client) -> None:
             return
         ex = cfg.get("execution", {})
         frac = ex.get("tp_sl_liq_fraction", 0.7) if ex.get("tp_sl", True) else None
-        p = approvals.propose_open(client, conn, args.long, args.short, notional, args.leverage, args.reason, ttl,
-                                   tp_sl_fraction=frac, max_impact_bps=cfg.get("execution", {}).get("max_impact_bps"))
+        from .scan import min_entry_basis
+
+        try:
+            p = approvals.propose_open(client, conn, args.long, args.short, notional, args.leverage, args.reason,
+                                       ttl, tp_sl_fraction=frac, max_impact_bps=ex.get("max_impact_bps"),
+                                       min_basis=min_entry_basis(cfg))
+        except approvals.BasisError as e:
+            # The long would be bought above the short's price: never open at an unfavorable basis.
+            print(f"[basis] proposal NOT created: {e}. Check again next cycle.")
+            return
     else:
         p = approvals.propose_close(client, conn, args.long, args.short, args.reason, ttl)
     from html import escape
